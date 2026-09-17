@@ -354,10 +354,10 @@ uDV 0x03).
 cmake -S . -B build-sil -DBUILD_SIL_TESTS=ON -DBUILD_UNIT_TESTS=OFF
 cmake --build build-sil
 ctest --test-dir build-sil --output-on-failure        # o:
-./build-sil/tests/sil/ecu08_sil --test-all
+./build-sil/tests/sil/ecu09_sil --test-all
 ```
 
-El target SIL `ecu08_sil` define `SIL_BUILD=1` y compila **17 unidades**:
+El target SIL `ecu09_sil` define `SIL_BUILD=1` y compila **17 unidades**:
 `sil_control_tests.cpp` + `Core/Src/app/{control,as_buzzer,cell_derate,discharge,motor_thermal,
 pack_thermal,pedal_cal,power_limit,pedal_cal_nvm,cal_session,inverter,udv_tx,
 radio_snapshot,vehicle_service,gps_nmea,gps_tx}.cpp`. **Sin HAL, sin FreeRTOS, sin mocks** — esos ficheros no incluyen nada

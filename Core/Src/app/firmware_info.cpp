@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: proprietary
+﻿// SPDX-License-Identifier: proprietary
 //
 // Emits the `bl_fwinfo_t` record the isc-fs/stm32-can-bootloader requires at a
 // fixed flash offset to consider the application valid. WITHOUT this record the
@@ -79,7 +79,7 @@ const bl_fwinfo_t __firmware_info
                           ECU_GIT_HASH_2, ECU_GIT_HASH_3,
                           0, 0, 0, 0 },
     .build_timestamp  = static_cast<uint64_t>(ECU_BUILD_TIMESTAMP),
-    .product_name     = "IFS08-CE-ECU",
+    .product_name     = "IFS09-CE-ECU",
     // reserved[0]: the ECU's BL node id. The flasher reads it and refuses to
     // flash if it doesn't match the BL it just discovered. reserved[1] free.
     .reserved         = { ecu::config::EcuNodeId, 0 },
