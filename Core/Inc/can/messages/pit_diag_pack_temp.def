@@ -1,0 +1,32 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x70A  PitDiag_pack_temp -- the accumulator thermal cap laid open. 100 ms
+ * while pit-diag is enabled.
+ *
+ * The per-module temperatures themselves already go to the dashboard and the
+ * radio; what is NOT visible anywhere else is which of them the cap actually
+ * USED. valid_mask is the point of this frame: a module excluded because the AMS
+ * marked it offline, or because its reading fell outside the plausible band, is
+ * silently absent from the max -- and a silently-excluded module is exactly how
+ * a hot pack goes unnoticed.
+ *
+ * unknown = 1 means NO module was usable and the cap is sitting at
+ * PackTempUnknownCapPct. Worth watching for: 0 degC is a real pack temperature,
+ * so unlike the motor there is no implausible value to catch an uninitialised
+ * state -- 0x136/0x137 staleness is the only thing standing between an
+ * unmonitored pack and full torque.
+ */
+
+CAN_MSG(PitDiag_pack_temp, 0x70A, 6, "VCU", 100)
+    FIELD_BE_S (pack_temp_used_degC, int16_t, 0, 16, 1, 0, "degC")
+    FIELD_BE_S (pack_temp_raw_degC,  int16_t, 2, 16, 1, 0, "degC")
+    FIELD_LE   (pack_cap_pct,        uint8_t, 4, 8,  1, 0, "%")
+    /* byte 5: which modules fed the max, then the two status bits */
+    FIELD_LE_BITS (mod0_used,    uint8_t, 40, 1, 1, 0, "bit")
+    FIELD_LE_BITS (mod1_used,    uint8_t, 41, 1, 1, 0, "bit")
+    FIELD_LE_BITS (mod2_used,    uint8_t, 42, 1, 1, 0, "bit")
+    FIELD_LE_BITS (mod3_used,    uint8_t, 43, 1, 1, 0, "bit")
+    FIELD_LE_BITS (mod4_used,    uint8_t, 44, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pack_unknown, uint8_t, 45, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pack_capped,  uint8_t, 46, 1, 1, 0, "bit")
+CAN_MSG_END(PitDiag_pack_temp)

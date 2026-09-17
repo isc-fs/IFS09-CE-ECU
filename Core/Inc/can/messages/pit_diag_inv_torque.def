@@ -1,0 +1,38 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x70C  PitDiag_inv_torque -- ask, ceiling, delivered. 100 ms while pit-diag
+ * is enabled.
+ *
+ * THE THREE NUMBERS THAT SETTLE "IS THE INVERTER LIMITING US?", deliberately on
+ * ONE frame so they are read together instead of correlated across three:
+ *
+ *   torque_req        what the ECU put on 0x362 this cycle. NEGATIVE for
+ *                     forward drive -- the mechanical negation, not a bug
+ *                     (inverter.cpp). Taken from the same builder that produced
+ *                     the frame, so it is the wire value, not a re-derivation.
+ *   torque_max_feas   what the inverter says it can currently deliver
+ *                     (EMC_TX_STATE_8 / 0x467). Below the request => the
+ *                     inverter is the limit, and it has been saying so.
+ *   torque_est        what the inverter believes it IS delivering
+ *                     (EMC_TX_STATE_9 / 0x468).
+ *
+ * setpoint_q is the inverter's own internal current command (0x467). Compared
+ * against current_q_A on 0x70B it shows whether its current loop is even
+ * tracking -- i.e. whether a shortfall is a LIMIT or a FAILURE to follow.
+ *
+ * >>> UNIT WARNING on torque_max_feas. <<<
+ * The vendor DBC (NX0001_STS04_A16.dbc) names it Torque_Max_Feas_Ndm -- "Ndm",
+ * NOT "Nm" -- with scale 1, while Torque_Nm_Req and Torque_Est_Nm are both
+ * plainly "Nm". Whether that is a typo or genuinely deci-Nm is UNRESOLVED, so
+ * this is forwarded RAW with scale 1 rather than converted on a guess. Resolve
+ * it on the car: at full pedal with a healthy inverter, compare it against
+ * torque_est and torque_req on this same frame. A factor of ten will be
+ * obvious. Do not build a limiter on this value until that is settled.
+ */
+
+CAN_MSG(PitDiag_inv_torque, 0x70C, 8, "VCU", 100)
+    FIELD_LE_S (torque_req,      int16_t, 0, 16, 1, 0, "Nm")
+    FIELD_LE_S (torque_max_feas, int16_t, 2, 16, 1, 0, "raw")
+    FIELD_LE_S (torque_est,      int16_t, 4, 16, 1, 0, "Nm")
+    FIELD_LE_S (setpoint_q,      int16_t, 6, 16, 0.03125, 0, "A")
+CAN_MSG_END(PitDiag_inv_torque)

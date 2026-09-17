@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x505  VCU_brake_over_limit -- TX to uDV (#17, revised). BINARY verdict:
+ * byte0 != 0 means the brake-pressure sensor reads ABOVE the established
+ * hard-braking limit (config::BrakeDvHardRaw). uDV uses it to verify EBS
+ * actuation; the SAME threshold gates the ECU's DV ready-to-drive entry
+ * (0x510 request is only honoured while this is true). Supersedes the
+ * original #17 float32-pressure idea -- uDV needs the verdict, not the value.
+ */
+
+CAN_MSG(VCU_brake_over_limit, 0x505, 1, "VCU", 100)
+    FIELD_LE (brake_over_limit, uint8_t, 0, 8, 1, 0, "bool")
+CAN_MSG_END(VCU_brake_over_limit)

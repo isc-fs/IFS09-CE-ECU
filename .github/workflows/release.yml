@@ -1,0 +1,186 @@
+﻿name: Release ECU firmware
+
+# Fires when a semver-like tag (v*) is pushed. Canonical flow:
+#   1. Merge dev -> main via PR (the release PR).
+#   2. Tag the resulting main merge commit:  git tag v1.1.0 <sha> && git push origin v1.1.0
+#   3. This workflow cross-compiles the tagged firmware, converts .elf -> .bin/.hex,
+#      regenerates ecu.dbc from the tagged DSL, and publishes a GitHub Release with
+#      ECU09.elf / ECU09.bin / ECU09.hex / ecu.dbc attached.
+#
+# workflow_dispatch (tag input) lets you (re)build assets for an EXISTING tag/release
+# -- e.g. to backfill assets onto a release that was cut by hand. If the release
+# already exists its assets are replaced (--clobber); the notes are left untouched.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build a release for (e.g. v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # create the Release + upload assets
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.name }}
+          fetch-depth: 0
+
+      - name: Install arm-none-eabi toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '14.2.Rel1'
+
+      # Same #48 guard the PR builds run. A release is exactly the wrong place
+      # to ship a regen-clobbered MessageRAM layout: it builds and flashes fine,
+      # then CAN TX is dead on the car.
+      - name: Verify FDCAN MessageRAM layout (no overlap -- #48 guard)
+        run: python3 scripts/check_fdcan_ram.py Core/Src/fdcan.c
+
+      - name: Build firmware (cross, Release)
+        run: |
+          cmake -S firmware -B build-fw \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/gcc-arm-none-eabi.cmake" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-fw -j
+
+      - name: Verify app entry point is 0x08020000
+        run: |
+          set -e
+          python3 scripts/check_flash_layout.py build-fw/ECU09.elf | tee layout.log
+          ENTRY=$(arm-none-eabi-objdump -h build-fw/ECU09.elf | awk '/\.isr_vector/ {print "0x"$5; exit}')
+          echo "Detected .isr_vector LMA: $ENTRY"
+          if [ "$ENTRY" != "0x08020000" ]; then
+            echo "::error::App entry point is $ENTRY, expected 0x08020000"
+            exit 1
+          fi
+          {
+            echo "## App entry point"
+            echo "✓ \`.isr_vector\` LMA = \`$ENTRY\` (matches contract \`0x08020000\`)"
+            echo
+            echo "## Flash layout"
+            echo '```'
+            cat layout.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Convert .elf to .bin and .hex
+        run: |
+          arm-none-eabi-objcopy -O binary build-fw/ECU09.elf build-fw/ECU09.bin
+          arm-none-eabi-objcopy -O ihex   build-fw/ECU09.elf build-fw/ECU09.hex
+          ls -la build-fw/ECU09.*
+
+      - name: Report sizes
+        run: |
+          {
+            echo "## Firmware sizes for \`${{ steps.tag.outputs.name }}\`"
+            echo '```'
+            arm-none-eabi-size --format=berkeley build-fw/ECU09.elf
+            echo '```'
+            echo
+            echo '### Asset sizes'
+            echo '```'
+            ls -la build-fw/ECU09.bin build-fw/ECU09.elf build-fw/ECU09.hex \
+              | awk '{printf "%-18s  %s bytes\n", $NF, $5}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Host SIL suite (safety belt -- the tag may point at any SHA)
+        run: |
+          cmake -S . -B build-sil -DBUILD_UNIT_TESTS=OFF -DBUILD_SIL_TESTS=ON
+          cmake --build build-sil -j
+          build-sil/tests/sil/ecu09_sil --test-all
+
+      - name: Regenerate ecu.dbc from the tagged code-first DSL
+        # Source of truth = Core/Inc/can/messages/*.def. Regenerating here (rather
+        # than just shipping the in-tree docs/dbc/ecu.dbc) binds the DBC to the EXACT
+        # firmware in this release -- a consumer grabbing ECU09.elf + ecu.dbc from the
+        # same release is guaranteed they describe the same wire bytes. The in-tree
+        # DBC is bot-maintained on every PR, so the diff should be empty; fail loud if not.
+        run: |
+          c++ -std=c++17 -I Core/Inc tools/dbc_dump.cpp -o /tmp/ecu_dbc_dump
+          /tmp/ecu_dbc_dump > /tmp/ecu.dbc
+          if ! diff -u docs/dbc/ecu.dbc /tmp/ecu.dbc; then
+            echo "::error::In-tree docs/dbc/ecu.dbc disagrees with the DSL dump at ${{ steps.tag.outputs.name }}"
+            echo "::error::The dbcinator bot should have kept these in sync. Investigate before publishing."
+            exit 1
+          fi
+          ls -la /tmp/ecu.dbc
+
+      - name: Generate release notes
+        run: |
+          TAG=${{ steps.tag.outputs.name }}
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          {
+            echo "# ECU firmware \`${TAG}\`"
+            echo
+            echo "Cross-compiled with \`arm-none-eabi-gcc 14.2.Rel1\` for \`STM32H733ZG\` (IFS09-CE ECU)."
+            echo
+            echo "## Assets"
+            echo "- \`ECU09.elf\` — debug symbols included"
+            echo "- \`ECU09.bin\` — raw image, flash to \`0x08020000\`"
+            echo "- \`ECU09.hex\` — Intel HEX, absolute addressing"
+            echo "- \`ecu.dbc\` — Vector CAN database emitted from the code-first DSL at this tagged SHA (cantools / MingoCAN / pit tool). Bound 1:1 to this firmware build."
+            echo
+            echo "## Memory layout"
+            echo "- App entry point: \`0x08020000\` (768 KB app region, links over the CAN bootloader)."
+            echo "- Flashed over CAN (node id 0x01)."
+            echo
+            if [ -n "$PREV" ]; then
+              echo "## Changes since \`$PREV\`"
+              echo
+              git log --pretty=format:'- %s (%h)' "${PREV}..${TAG}" \
+                | grep -vE '^\- Merge (pull request|branch)' | head -50
+              echo
+              echo
+              echo "**Full changelog:** https://github.com/${{ github.repository }}/compare/${PREV}...${TAG}"
+            else
+              echo "## Initial release on this tag namespace"
+            fi
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Publish GitHub Release (create, or add assets to an existing one)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=${{ steps.tag.outputs.name }}
+          if echo "$TAG" | grep -q '-'; then
+            BASE=${TAG%%-*}; SUFFIX=${TAG#*-}; TITLE="$BASE — $SUFFIX"
+          else
+            TITLE="$TAG"
+          fi
+          ASSETS="build-fw/ECU09.elf build-fw/ECU09.bin build-fw/ECU09.hex /tmp/ecu.dbc"
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG exists -- uploading/refreshing assets (notes left untouched)."
+            gh release upload "$TAG" --repo "${{ github.repository }}" --clobber $ASSETS
+          else
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --notes-file release-notes.md \
+              $ASSETS
+          fi

@@ -1,0 +1,82 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x708  PitDiag_inv_faults -- the inverter's TWO LOWER fault layers, decoded
+ * from 0x461 (EMC_TX_STATE_2). 100 ms while the stream is enabled.
+ *
+ * The W90 has three fault layers and they cascade UPWARD (manual 9.2):
+ *   L1 PwrStg_BitState      (0x461 bits 47-55, 9 bits) -- hardware protection
+ *   L2 EMCtrl_FOC_BitState  (0x461 bits 39-46, 8 bits) -- machine control
+ *   L3 DEM_Code             (0x461 bits 16-30)         -- already on 0x702
+ *
+ * Only L3 was ever decoded, so a latched DEM that refuses to clear was
+ * indistinguishable from a live L1/L2 condition holding it up -- and manual
+ * 9.2.2 makes the cascade explicit (L2 bit 5 PwrStg_Fault is literally "see L1
+ * faults"). If an L1 bit is still asserted, NO CAN command clears the DEM,
+ * because the root cause is still present; that is the difference between a
+ * firmware bug and a wiring/interlock fault. HVIL_Open is the load-bearing one.
+ *
+ * Both layers are BITMASKS, not enums -- several bits can be set at once, so
+ * each is its own named 1-bit DBC signal (a composite byte view would also make
+ * cantools reject the overlap). Alive/Enable/Init_OK are HEALTH bits: set is
+ * normal, CLEAR is the anomaly. Names mirror manual 9.2.1 / 9.2.2 verbatim.
+ */
+
+CAN_MSG(PitDiag_inv_faults, 0x708, 7, "VCU", 100)
+    /* --- L1: power stage (manual 9.2.1). Bits 0-8. --- */
+    FIELD_LE_BITS (pwrstg_alive,         uint8_t,  0, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_enable,        uint8_t,  1, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_uvlo,          uint8_t,  2, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_desat,         uint8_t,  3, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_dt_violation,  uint8_t,  4, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_hvil_open,     uint8_t,  5, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_ocp,           uint8_t,  6, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_ovp_th1,       uint8_t,  7, 1, 1, 0, "bit")
+    FIELD_LE_BITS (pwrstg_ovp_th2,       uint8_t,  8, 1, 1, 0, "bit")
+    /* --- L2: electric machine control (manual 9.2.2). Bits 16-23. --- */
+    FIELD_LE_BITS (emctrl_init_ok,       uint8_t, 16, 1, 1, 0, "bit")
+    FIELD_LE_BITS (emctrl_posfb,         uint8_t, 17, 1, 1, 0, "bit")
+    FIELD_LE_BITS (emctrl_asc,           uint8_t, 18, 1, 1, 0, "bit")
+    FIELD_LE_BITS (emctrl_curr_imbalance,uint8_t, 19, 1, 1, 0, "bit")
+    FIELD_LE_BITS (emctrl_pwrstg_fault,  uint8_t, 20, 1, 1, 0, "bit")
+    FIELD_LE_BITS (emctrl_curr_derating, uint8_t, 21, 1, 1, 0, "bit")
+    FIELD_LE_BITS (emctrl_loop_delocked, uint8_t, 22, 1, 1, 0, "bit")
+    FIELD_LE_BITS (emctrl_phcurr_acq,    uint8_t, 23, 1, 1, 0, "bit")
+    /* --- Byte 3: the COMMANDED side of the fault handshake. Everything above
+     * is what the inverter REPORTS. The pit tool sits on FDCAN2 and the
+     * inverter setpoints go out on FDCAN1, so without these you cannot tell
+     * "the ECU never emitted the recovery burst" from "it did and the inverter
+     * ignored it" -- and 0x702 inv_mode_cmd only carries the PRIMARY word.
+     * Pair with 0x700 tx_dropped: burst emitted + nothing dropped = it reached
+     * the FDCAN1 TX FIFO. --- */
+    FIELD_LE_BITS (cmd_follow_n,         uint8_t, 24, 2, 1, 0, "count")
+    FIELD_LE_BITS (cmd_flt_clear,        uint8_t, 26, 1, 1, 0, "bit")
+    /* --- Bytes 4-5: how FRESH the inverter state we act on actually is. ---
+     *
+     * The whole climb/fault ladder is driven by inv_state, which comes from
+     * 0x461 -- and NOTHING told us how often 0x461 actually arrives. The W90
+     * manual's Annex 1 puts App_State on a 10 ms frame but Dem_Fault on a
+     * 500 ms one, and the A16 config packs BOTH into 0x461, so its real period
+     * is unknown. If it is slow, the 100 Hz control loop fires dozens of
+     * command bursts off a single stale observation and the phase between the
+     * two decides the outcome -- which would make recovery intermittent under
+     * apparently identical conditions (#148).
+     *
+     * age counts ms since the last 0x461 (saturating at 255 -- anything that
+     * high already means "far too stale to steer a state machine with").
+     * seq increments once per 0x461 received and wraps; since this frame is
+     * emitted every 100 ms, the DELTA between consecutive 0x708 frames IS the
+     * arrival count per 100 ms -- delta 10 => 10 ms period, 1 => 100 ms,
+     * mostly-0 => 500 ms. That is the measurement, and it needs no FDCAN1
+     * access (which the pit adapter does not have). */
+    FIELD_LE      (inv_state_age_ms,     uint8_t,  4, 8, 1, 0, "ms")
+    FIELD_LE      (inv_state_seq,        uint8_t,  5, 8, 1, 0, "count")
+    /* Wrapping count of times Active fell back to WaitInvStandby because the
+     * inverter left the drive with the TS still up (#191) -- an overspeed
+     * parking it in Standby(3) being the case that found this. The event is
+     * TRANSIENT once the fallback exists: the inverter recovers and the FSM
+     * climbs again within a couple of ticks, so without a counter it leaves no
+     * trace at all and a driver reporting "it cut out for a second" has nothing
+     * to point at. Byte 6 is APPENDED -- bytes 0-5 keep their offsets, so
+     * existing decoders are unaffected. */
+    FIELD_LE      (inv_redrive_count,    uint8_t,  6, 8, 1, 0, "count")
+CAN_MSG_END(PitDiag_inv_faults)

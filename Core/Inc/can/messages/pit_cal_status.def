@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x7E3  PitCal_status -- TX. Answer to every 0x7E2, and repeated at 100 ms
+ * while a session is open so a client that missed a reply resynchronises
+ * without having to poll (#169).
+ *
+ * cal_load mirrors the BOOT-time outcome (also on the ungated 0x704) so the
+ * calibration view can show "the record in flash was rejected, you are running
+ * defaults" without the operator having to look at the health frame.
+ */
+
+CAN_MSG(PitCal_status, 0x7E3, 8, "VCU", 100)
+    FIELD_LE (session_state,    uint8_t, 0, 8, 1, 0, "enum")
+    FIELD_LE (last_cmd,         uint8_t, 1, 8, 1, 0, "enum")
+    FIELD_LE (result,           uint8_t, 2, 8, 1, 0, "enum")
+    FIELD_LE (captured_mask,    uint8_t, 3, 8, 1, 0, "bits")
+    FIELD_LE (validation_flags, uint8_t, 4, 8, 1, 0, "bits")
+    FIELD_LE (cal_load,         uint8_t, 5, 8, 1, 0, "enum")
+CAN_MSG_END(PitCal_status)
+
+#ifdef ECU_DSL_VALUES_PASS
+CAN_VAL(PitCal_status, session_state, 0, "Idle")
+CAN_VAL(PitCal_status, session_state, 1, "Active")
+CAN_VAL(PitCal_status, session_state, 2, "Validated")
+CAN_VAL(PitCal_status, session_state, 3, "Committing")
+CAN_VAL(PitCal_status, session_state, 4, "Committed")
+CAN_VAL(PitCal_status, session_state, 5, "Error")
+CAN_VAL(PitCal_status, result, 0, "OK")
+CAN_VAL(PitCal_status, result, 1, "BadGuard")
+CAN_VAL(PitCal_status, result, 2, "NotInSession")
+CAN_VAL(PitCal_status, result, 3, "VehicleNotSafe")
+CAN_VAL(PitCal_status, result, 4, "SampleUnstable")
+CAN_VAL(PitCal_status, result, 5, "MissingPoints")
+CAN_VAL(PitCal_status, result, 6, "ValidationFailed")
+CAN_VAL(PitCal_status, result, 7, "NvmWriteFailed")
+CAN_VAL(PitCal_status, result, 8, "UnknownCmd")
+CAN_VAL(PitCal_status, cal_load, 0, "Defaults")
+CAN_VAL(PitCal_status, cal_load, 1, "Loaded")
+CAN_VAL(PitCal_status, cal_load, 2, "InvalidFellBack")
+CAN_VAL(PitCal_status, cal_load, 3, "BadVersionFellBack")
+#endif

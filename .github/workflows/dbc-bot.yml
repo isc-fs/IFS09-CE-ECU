@@ -1,0 +1,47 @@
+﻿# SPDX-License-Identifier: proprietary
+#
+# dbcinator bot: regenerates docs/dbc/ecu.dbc from the code-first CAN
+# DSL (Core/Inc/can/messages/*.def -> ecu_dbc_dump host target) on
+# every PR. If the regenerated DBC differs from the in-tree copy, the
+# bot commits + pushes the update onto the PR branch as
+# dbcinator[bot] and posts a structured wire-contract diff comment.
+# Fork PRs are skipped by the action (can't push back).
+#
+# All the regenerate/commit/comment plumbing lives in the reusable
+# composite action in isc-fs/IFS08-DBCinator (pinned to a tagged
+# release). This repo only carries the call below, overriding the
+# action's AMS-shaped defaults to match ECU's host build:
+#   - host CMake source dir is tests/sil (not tests/unit)
+#   - dump target is ecu_dbc_dump (not dbc_dump)
+#   - dump binary lives at tests/sil/ecu_dbc_dump inside the build dir
+#
+# TODO(IFS09): replace with isc-fs/IFS09-DBCinator once it exists.`n# Pinned to a tagged release of isc-fs/IFS08-DBCinator. Bump when
+# picking up new features or bug fixes from the bot.
+
+name: dbcinator
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: write        # bot pushes the regenerated DBC onto the PR branch
+  pull-requests: write   # bot posts the wire-contract diff comment
+
+jobs:
+  regenerate-dbc:
+    name: dbcinator (regenerate ecu.dbc)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Regenerate docs/dbc/ecu.dbc from the code-first DSL
+        uses: isc-fs/IFS08-DBCinator/actions/dbc-bot@v1.0.0
+        with:
+          app-id:           ${{ secrets.DBCINATOR_APP_ID }}
+          private-key:      ${{ secrets.DBCINATOR_PRIVATE_KEY }}
+          dbc-path:         docs/dbc/ecu.dbc
+          cmake-source-dir: tests/sil
+          dump-target:      ecu_dbc_dump
+          # When cmake-source-dir is tests/sil, the build root IS tests/sil
+          # from the build's perspective, so ecu_dbc_dump lands at the top
+          # of the build dir -- not nested under tests/sil/.
+          dump-binary-path: ecu_dbc_dump

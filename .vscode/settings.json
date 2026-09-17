@@ -1,0 +1,32 @@
+{
+    // ── ISC MingoCAN flasher — how to build + flash THIS repo. ──
+    // Committed so every ECU clone builds + flashes with no per-dev setup
+    // (VS Code "ISC MingoCAN: Build & Flash firmware").
+    //
+    // Your CAN adapter (iscFs.interface / iscFs.channel) is PER-MACHINE —
+    // keep it in your USER settings, NOT here, so a teammate on a different
+    // dongle (SLCAN / CANable) isn't forced onto PCAN.
+    "iscFs.nodeId": "0x1",
+    "iscFs.buildCommand": "cmake -S firmware -B build-fw -DCMAKE_TOOLCHAIN_FILE=$PWD/cmake/gcc-arm-none-eabi.cmake && cmake --build build-fw",
+    "iscFs.firmwareArtifact": "build-fw/ECU08.elf",
+
+    // ── STM32CubeCLT editor tooling (cmake driver + clangd). ──
+    // CMake Tools must target the FIRMWARE project (firmware/CMakeLists.txt,
+    // arm-none-eabi) — NOT the repo-root CMakeLists.txt, which is the host
+    // SIL/unit-test project (native gcc). Without cmake.sourceDirectory it
+    // defaults to the root and fails with "source does not match" against a
+    // firmware-built cache. Its own build dir (build/) stays separate from the
+    // flasher's build-fw so the two never fight over one cache/generator.
+    "cmake.cmakePath": "cube-cmake",
+    "cmake.sourceDirectory": "${workspaceFolder}/firmware",
+    "cmake.configureArgs": [
+        "-DCMAKE_COMMAND=cube-cmake",
+        "-DCMAKE_TOOLCHAIN_FILE=${workspaceFolder}/cmake/gcc-arm-none-eabi.cmake"
+    ],
+    "stm32cube-ide-clangd.path": "cube",
+    "stm32cube-ide-clangd.arguments": [
+        "starm-clangd",
+        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gcc*",
+        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-g++*"
+    ]
+}

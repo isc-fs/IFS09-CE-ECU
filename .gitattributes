@@ -1,0 +1,5 @@
+# Vendor CAN databases are text. Pin LF so a Windows-side vendor drop cannot
+# reintroduce a CRLF twin of an existing file (see #165, where
+# NX0001-STS04_A16.dbc and NX0001_STS04_A16.dbc were byte-identical apart
+# from line endings).
+*.dbc text eol=lf

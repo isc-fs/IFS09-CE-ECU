@@ -1,0 +1,40 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x50A  UDV_as_status -- RX from the uDV on FDCAN2. The autonomous system's
+ * own state, published at ~10 Hz so the ECU can sound the AS Emergency buzzer.
+ *
+ * WHY THE ECU OWNS THE SOUND. FSG requires AS Emergency to be indicated
+ * acoustically: an intermittent tone, 50 % duty in the 1-5 Hz band, for 10 s,
+ * coincident with the ASSI blue flash. There is no buzzer in the DV stack, so
+ * it reuses the RTDS buzzer on this board.
+ *
+ * The split is deliberate. The uDV owns the TRIGGER, because only its AS state
+ * machine knows it is in Emergency. The ECU owns the WAVEFORM, so the tone does
+ * not depend on a CAN frame landing every 150 ms -- a safety signal must not go
+ * silent because the bus hiccuped. See as_buzzer.hpp.
+ *
+ * WHY 0x50A AND NOT THE 0x513 ORIGINALLY PROPOSED. 0x513 is already a dashboard
+ * frame on FDCAN3. IDs are per-bus so there would be no wire conflict, but the
+ * generated DBC carries no bus qualifier, so ecu.dbc loaded against an FDCAN3
+ * capture would decode one as the other. 0x50A is free, sits with the rest of
+ * the uDV cluster (0x504-0x509), and is outside the dashboard block entirely.
+ *
+ * The status byte encoding is the uDV's, matching their 0x100 ASSI byte, so the
+ * same value means the same thing on both nodes.
+ */
+
+CAN_MSG(UDV_as_status, 0x50A, 1, "uDV", 100)
+    /* AS state. Only 0x01 EMERGENCY drives the buzzer; the rest are consumed so
+     * the fail-safe can tell "the uDV went quiet mid-mission" (was DRIVING or
+     * READY) from "the uDV is not running" (OFF/FINISHED, or never seen). */
+    FIELD_LE (as_status, uint8_t, 0, 8, 1, 0, "-")
+CAN_MSG_END(UDV_as_status)
+
+/* Enum value table (DBC VAL_), seen only by the host dbc_dump build. */
+#ifdef ECU_DSL_VALUES_PASS
+CAN_VAL(UDV_as_status, as_status, 0, "Off")
+CAN_VAL(UDV_as_status, as_status, 1, "Emergency")
+CAN_VAL(UDV_as_status, as_status, 2, "Ready")
+CAN_VAL(UDV_as_status, as_status, 3, "Driving")
+CAN_VAL(UDV_as_status, as_status, 4, "Finished")
+#endif

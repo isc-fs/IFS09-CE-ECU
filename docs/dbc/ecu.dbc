@@ -1,0 +1,359 @@
+VERSION ""
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: AMS VCU ECU UDV Pit_Tool
+
+BA_DEF_ BO_  "GenMsgCycleTime" INT 0 65535;
+BA_DEF_DEF_  "GenMsgCycleTime" 0;
+
+BO_ 256 VCU_heartbeat: 3 VCU
+ SG_ dc_bus_voltage : 0|16@1+ (1,0) [0|0] "V" Vector__XXX
+ SG_ discharge_engaged : 16|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ dc_bus_valid : 17|1@1+ (1,0) [0|0] "bit" Vector__XXX
+
+BO_ 1284 VCU_ts_active: 1 VCU
+ SG_ ts_active : 0|8@1+ (1,0) [0|0] "bool" Vector__XXX
+
+BO_ 1285 VCU_brake_over_limit: 1 VCU
+ SG_ brake_over_limit : 0|8@1+ (1,0) [0|0] "bool" Vector__XXX
+
+BO_ 1286 VCU_motor_rpm: 4 VCU
+ SG_ motor_rpm : 0|32@1- (1,0) [0|0] "rpm" Vector__XXX
+
+BO_ 1297 VCU_r2d_confirm: 1 VCU
+ SG_ r2d_confirm : 0|8@1+ (1,0) [0|0] "bool" Vector__XXX
+
+BO_ 1288 VCU_gps_position: 8 VCU
+ SG_ latitude : 0|32@1- (1e-07,0) [0|0] "deg" Vector__XXX
+ SG_ longitude : 32|32@1- (1e-07,0) [0|0] "deg" Vector__XXX
+
+BO_ 1289 VCU_gps_status: 8 VCU
+ SG_ speed_kmh : 0|16@1+ (0.01,0) [0|0] "km/h" Vector__XXX
+ SG_ course_deg : 16|16@1+ (0.01,0) [0|0] "deg" Vector__XXX
+ SG_ sats : 32|8@1+ (1,0) [0|0] "count" Vector__XXX
+ SG_ has_fix : 40|1@1+ (1,0) [0|0] "bool" Vector__XXX
+ SG_ nmea_count : 48|16@1+ (1,0) [0|0] "count" Vector__XXX
+
+BO_ 2017 PitDiag_ack: 1 VCU
+ SG_ enabled : 0|8@1+ (1,0) [0|0] "bool" Vector__XXX
+
+BO_ 2019 PitCal_status: 8 VCU
+ SG_ session_state : 0|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ last_cmd : 8|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ result : 16|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ captured_mask : 24|8@1+ (1,0) [0|0] "bits" Vector__XXX
+ SG_ validation_flags : 32|8@1+ (1,0) [0|0] "bits" Vector__XXX
+ SG_ cal_load : 40|8@1+ (1,0) [0|0] "enum" Vector__XXX
+
+BO_ 2020 PitCal_apps: 8 VCU
+ SG_ apps1_min : 7|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ apps1_max : 23|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ apps2_min : 39|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ apps2_max : 55|16@0+ (1,0) [0|0] "adc" Vector__XXX
+
+BO_ 2021 PitCal_brake: 8 VCU
+ SG_ brake_rest : 7|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ brake_arm : 23|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ brake_dv_hard : 39|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ brake_pressed : 55|16@0+ (1,0) [0|0] "adc" Vector__XXX
+
+BO_ 1792 PitDiag_status: 8 VCU
+ SG_ fsm_state : 0|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ inv_state : 8|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ t11_8_9 : 17|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ rtds_active : 18|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ ok_precharge : 19|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ start_button : 20|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ dv_mode : 21|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ tx_dropped : 22|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ power_capped : 23|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ torque_pct : 24|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ v_cell_min_mV : 39|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ torque_cmd : 55|16@0- (1,0) [0|0] "cmd" Vector__XXX
+
+BO_ 1793 PitDiag_pedals: 8 VCU
+ SG_ apps1_raw : 7|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ apps2_raw : 23|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ brake_raw : 39|16@0+ (1,0) [0|0] "adc" Vector__XXX
+ SG_ apps1_pct : 48|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ apps2_pct : 56|8@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1797 PitDiag_brake: 3 VCU
+ SG_ brake_pressure : 7|16@0+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ brake_pct : 16|8@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1794 PitDiag_inverter: 8 VCU
+ SG_ dc_bus_voltage : 7|16@0+ (1,0) [0|0] "V" Vector__XXX
+ SG_ inv_rpm : 23|32@0- (1,0) [0|0] "rpm" Vector__XXX
+ SG_ inv_error : 48|8@1+ (1,0) [0|0] "code" Vector__XXX
+ SG_ dem_present : 56|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ inv_mode_cmd : 57|7@1+ (1,0) [0|0] "req" Vector__XXX
+
+BO_ 1798 PitDiag_inverter_temps: 7 VCU
+ SG_ temp_board_degC : 0|8@1+ (1,-50) [0|0] "degC" Vector__XXX
+ SG_ temp_pwrstg_degC : 8|8@1+ (1,-50) [0|0] "degC" Vector__XXX
+ SG_ temp_motor1_degC : 16|8@1+ (1,-50) [0|0] "degC" Vector__XXX
+ SG_ temp_motor2_degC : 24|8@1+ (1,-50) [0|0] "degC" Vector__XXX
+ SG_ motor_temp_used_degC : 32|8@1+ (1,-50) [0|0] "degC" Vector__XXX
+ SG_ thermal_cap_pct : 40|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ temp_s1_valid : 48|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ temp_s2_valid : 49|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ temp_unknown : 50|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ thermal_capped : 51|1@1+ (1,0) [0|0] "bit" Vector__XXX
+
+BO_ 1800 PitDiag_inv_faults: 7 VCU
+ SG_ pwrstg_alive : 0|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_enable : 1|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_uvlo : 2|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_desat : 3|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_dt_violation : 4|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_hvil_open : 5|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_ocp : 6|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_ovp_th1 : 7|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pwrstg_ovp_th2 : 8|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_init_ok : 16|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_posfb : 17|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_asc : 18|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_curr_imbalance : 19|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_pwrstg_fault : 20|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_curr_derating : 21|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_loop_delocked : 22|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ emctrl_phcurr_acq : 23|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ cmd_follow_n : 24|2@1+ (1,0) [0|0] "count" Vector__XXX
+ SG_ cmd_flt_clear : 26|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ inv_state_age_ms : 32|8@1+ (1,0) [0|0] "ms" Vector__XXX
+ SG_ inv_state_seq : 40|8@1+ (1,0) [0|0] "count" Vector__XXX
+ SG_ inv_redrive_count : 48|8@1+ (1,0) [0|0] "count" Vector__XXX
+
+BO_ 1795 PitDiag_fwinfo: 7 VCU
+ SG_ fw_major : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ fw_minor : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ fw_patch : 16|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ git_hash : 31|32@0+ (1,0) [0|0] "hex" Vector__XXX
+
+BO_ 1796 PitDiag_health: 8 VCU
+ SG_ free_heap : 7|16@0+ (1,0) [0|0] "B" Vector__XXX
+ SG_ min_free_heap : 23|16@0+ (1,0) [0|0] "B" Vector__XXX
+ SG_ task_control : 32|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ task_can_rx : 33|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ task_can_tx : 34|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ task_telemetry : 35|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ task_diag : 36|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ stub_no_ams : 37|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ stub_no_inverter : 38|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ stub_start : 39|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ reset_cause : 40|3@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ stub_brake : 43|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ cal_status : 44|2@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ stub_torque_cap : 46|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ boot_refused : 47|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ uptime_s : 48|8@1+ (1,0) [0|0] "s" Vector__XXX
+ SG_ last_fault : 56|8@1+ (1,0) [0|0] "code" Vector__XXX
+
+BO_ 1799 PitDiag_dv: 8 VCU
+ SG_ dv_r2d_req : 0|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ dv_cmd_fresh : 1|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ ts_active : 2|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ brake_over_limit : 3|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ r2d_confirm : 4|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ as_emergency : 5|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ as_from_stale : 6|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ as_fresh : 7|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ dv_torque_pct : 8|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ motor_rpm_mech : 16|16@1- (1,0) [0|0] "rpm" Vector__XXX
+ SG_ as_status : 32|8@1+ (1,0) [0|0] "-" Vector__XXX
+
+BO_ 1801 PitDiag_cell: 8 VCU
+ SG_ raw_mV : 7|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ est_ocv_mV : 23|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ comp_mV : 39|16@0- (1,0) [0|0] "mV" Vector__XXX
+ SG_ cap_pct : 48|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ compensated : 56|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ raw_floor : 57|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ capped : 58|1@1+ (1,0) [0|0] "bit" Vector__XXX
+
+BO_ 1802 PitDiag_pack_temp: 6 VCU
+ SG_ pack_temp_used_degC : 7|16@0- (1,0) [0|0] "degC" Vector__XXX
+ SG_ pack_temp_raw_degC : 23|16@0- (1,0) [0|0] "degC" Vector__XXX
+ SG_ pack_cap_pct : 32|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ mod0_used : 40|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ mod1_used : 41|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ mod2_used : 42|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ mod3_used : 43|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ mod4_used : 44|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pack_unknown : 45|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ pack_capped : 46|1@1+ (1,0) [0|0] "bit" Vector__XXX
+
+BO_ 1803 PitDiag_inv_foc: 8 VCU
+ SG_ current_d_A : 0|16@1- (0.03125,0) [0|0] "A" Vector__XXX
+ SG_ current_q_A : 16|16@1- (0.03125,0) [0|0] "A" Vector__XXX
+ SG_ volt_modulus : 32|16@1+ (1,0) [0|0] "permil" Vector__XXX
+ SG_ ctrl_mode : 48|4@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ ctrl_type : 52|4@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ cmd_src : 56|4@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ s4_fresh : 60|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ s6_fresh : 61|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ s8_fresh : 62|1@1+ (1,0) [0|0] "bit" Vector__XXX
+ SG_ s9_fresh : 63|1@1+ (1,0) [0|0] "bit" Vector__XXX
+
+BO_ 1804 PitDiag_inv_torque: 8 VCU
+ SG_ torque_req : 0|16@1- (1,0) [0|0] "Nm" Vector__XXX
+ SG_ torque_max_feas : 16|16@1- (1,0) [0|0] "raw" Vector__XXX
+ SG_ torque_est : 32|16@1- (1,0) [0|0] "Nm" Vector__XXX
+ SG_ setpoint_q : 48|16@1- (0.03125,0) [0|0] "A" Vector__XXX
+
+BO_ 1805 PitDiag_power: 8 VCU
+ SG_ shaft_power : 0|16@1- (10,0) [0|0] "W" Vector__XXX
+ SG_ ac_power : 16|16@1- (10,0) [0|0] "W" Vector__XXX
+ SG_ dc_bus_V : 32|16@1+ (1,0) [0|0] "V" Vector__XXX
+ SG_ accu_current : 48|16@1- (0.1,0) [0|0] "A" Vector__XXX
+
+BO_ 32 ACU_ok_precharge: 1 AMS
+ SG_ ok_precharge : 0|8@1+ (1,0) [0|0] "bool" Vector__XXX
+
+BO_ 33 ACU_discharge_interlock: 1 AMS
+ SG_ fsm_in_start : 0|1@1+ (1,0) [0|0] "bool" Vector__XXX
+ SG_ tsms : 1|1@1+ (1,0) [0|0] "bool" Vector__XXX
+
+BO_ 300 ACU_v_cell_min: 2 AMS
+ SG_ min_cell_mV : 7|16@0+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 305 ACU_vmin_module_a: 6 AMS
+ SG_ vmin_module0 : 7|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ vmin_module1 : 23|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ vmin_module2 : 39|16@0+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 306 ACU_vmin_module_b: 4 AMS
+ SG_ vmin_module3 : 7|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ vmin_module4 : 23|16@0+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 307 ACU_vmax_module_a: 6 AMS
+ SG_ vmax_module0 : 7|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ vmax_module1 : 23|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ vmax_module2 : 39|16@0+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 308 ACU_vmax_module_b: 4 AMS
+ SG_ vmax_module3 : 7|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ vmax_module4 : 23|16@0+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 309 ACU_currents: 4 AMS
+ SG_ current_accu_dA : 7|16@0- (0.1,0) [0|0] "A" Vector__XXX
+ SG_ current_dcdc_dA : 23|16@0- (0.1,0) [0|0] "A" Vector__XXX
+
+BO_ 310 ACU_tmax_module_a: 6 AMS
+ SG_ tmax_module0 : 7|16@0- (1,0) [0|0] "degC" Vector__XXX
+ SG_ tmax_module1 : 23|16@0- (1,0) [0|0] "degC" Vector__XXX
+ SG_ tmax_module2 : 39|16@0- (1,0) [0|0] "degC" Vector__XXX
+
+BO_ 311 ACU_tmax_module_b: 6 AMS
+ SG_ tmax_module3 : 7|16@0- (1,0) [0|0] "degC" Vector__XXX
+ SG_ tmax_module4 : 23|16@0- (1,0) [0|0] "degC" Vector__XXX
+ SG_ tmax_dcdc : 39|16@0- (1,0) [0|0] "degC" Vector__XXX
+
+BO_ 1184 AMS_status: 8 AMS
+ SG_ fsm_state : 0|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ ams_ok : 8|8@1+ (1,0) [0|0] "bool" Vector__XXX
+ SG_ module_online_mask : 16|8@1+ (1,0) [0|0] "bitmask" Vector__XXX
+ SG_ reserved_b3 : 24|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ min_cell_mV : 39|16@0+ (1,0) [0|0] "mV" Vector__XXX
+ SG_ max_cell_mV : 55|16@0+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 1287 UDV_torque_cmd: 4 uDV
+ SG_ torque_pct : 0|32@1- (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1290 UDV_as_status: 1 uDV
+ SG_ as_status : 0|8@1+ (1,0) [0|0] "-" Vector__XXX
+
+BO_ 1296 UDV_r2d_request: 1 uDV
+ SG_ r2d_request : 0|8@1+ (1,0) [0|0] "bool" Vector__XXX
+
+BO_ 2 BL_boot_trigger: 4 Pit_Tool
+ SG_ magic : 7|32@0+ (1,0) [0|0] "magic" Vector__XXX
+
+BO_ 2016 PitDiag_cmd: 4 Pit_Tool
+ SG_ magic : 7|32@0+ (1,0) [0|0] "magic" Vector__XXX
+
+BO_ 2018 PitCal_cmd: 8 Pit_Tool
+ SG_ cmd : 0|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ arg : 8|8@1+ (1,0) [0|0] "enum" Vector__XXX
+ SG_ guard : 39|32@0+ (1,0) [0|0] "guard" Vector__XXX
+
+BA_ "GenMsgCycleTime" BO_ 256 10;
+BA_ "GenMsgCycleTime" BO_ 1284 100;
+BA_ "GenMsgCycleTime" BO_ 1285 100;
+BA_ "GenMsgCycleTime" BO_ 1286 10;
+BA_ "GenMsgCycleTime" BO_ 1288 200;
+BA_ "GenMsgCycleTime" BO_ 1289 200;
+BA_ "GenMsgCycleTime" BO_ 2019 100;
+BA_ "GenMsgCycleTime" BO_ 1792 100;
+BA_ "GenMsgCycleTime" BO_ 1793 100;
+BA_ "GenMsgCycleTime" BO_ 1797 100;
+BA_ "GenMsgCycleTime" BO_ 1794 100;
+BA_ "GenMsgCycleTime" BO_ 1798 100;
+BA_ "GenMsgCycleTime" BO_ 1800 100;
+BA_ "GenMsgCycleTime" BO_ 1795 100;
+BA_ "GenMsgCycleTime" BO_ 1796 1000;
+BA_ "GenMsgCycleTime" BO_ 1799 100;
+BA_ "GenMsgCycleTime" BO_ 1801 100;
+BA_ "GenMsgCycleTime" BO_ 1802 100;
+BA_ "GenMsgCycleTime" BO_ 1803 100;
+BA_ "GenMsgCycleTime" BO_ 1804 100;
+BA_ "GenMsgCycleTime" BO_ 1805 100;
+BA_ "GenMsgCycleTime" BO_ 32 100;
+BA_ "GenMsgCycleTime" BO_ 33 100;
+BA_ "GenMsgCycleTime" BO_ 300 100;
+BA_ "GenMsgCycleTime" BO_ 305 100;
+BA_ "GenMsgCycleTime" BO_ 306 100;
+BA_ "GenMsgCycleTime" BO_ 307 100;
+BA_ "GenMsgCycleTime" BO_ 308 100;
+BA_ "GenMsgCycleTime" BO_ 309 50;
+BA_ "GenMsgCycleTime" BO_ 310 250;
+BA_ "GenMsgCycleTime" BO_ 311 250;
+BA_ "GenMsgCycleTime" BO_ 1184 500;
+BA_ "GenMsgCycleTime" BO_ 1287 20;
+BA_ "GenMsgCycleTime" BO_ 1290 100;
+
+VAL_ 2019 session_state 0 "Idle" 1 "Active" 2 "Validated" 3 "Committing" 4 "Committed" 5 "Error" ;
+VAL_ 2019 result 0 "OK" 1 "BadGuard" 2 "NotInSession" 3 "VehicleNotSafe" 4 "SampleUnstable" 5 "MissingPoints" 6 "ValidationFailed" 7 "NvmWriteFailed" 8 "UnknownCmd" ;
+VAL_ 2019 cal_load 0 "Defaults" 1 "Loaded" 2 "InvalidFellBack" 3 "BadVersionFellBack" ;
+VAL_ 1792 fsm_state 0 "WaitInvVdcConfig" 1 "Precharge" 2 "WaitStartBrake" 3 "R2dDelay" 4 "WaitInvStandby" 5 "Active" 6 "AmsError" ;
+VAL_ 1792 inv_state 0 "Off" 3 "Standby" 4 "Ready" 6 "TorqueEnable" 10 "SoftFault" 11 "HardFault" 13 "Shutdown" ;
+VAL_ 1794 inv_error 0 "NoFault" 1 "LostMsg" 2 "Undervoltage" 3 "PwrStgOvertemp" 4 "PwrStgTempDegradation" 5 "EMCtrFault" 6 "TaskOverrun" 7 "CAN1_BusOff" 8 "EmachineOvertemp" 9 "PhaseCurrentSensorRange" 10 "PwrStgTempSensorRange" 11 "DCBusVoltageSensorRange" 12 "DPBoardOvertemp" 13 "DRVBoardOvertemp" 14 "AuxSupplyRange" 15 "EmachineOverspeed" ;
+VAL_ 1794 inv_mode_cmd 1 "Off" 4 "Ready" 6 "TorqueEnable" 13 "HardFaultReset" 19 "Fault" ;
+VAL_ 1796 cal_status 0 "Defaults" 1 "Loaded" 2 "InvalidFellBack" 3 "BadVersionFellBack" ;
+VAL_ 1796 reset_cause 0 "Unknown" 1 "PowerOn" 2 "Pin" 3 "Software" 4 "IWDG" 5 "WWDG" 6 "LowPower" ;
+VAL_ 1796 last_fault 0 "None" 241 "HardFault" 242 "MemManage" 243 "BusFault" 244 "UsageFault" 245 "StackOverflow" 246 "MallocFailed" 247 "AssertFailed" ;
+VAL_ 1290 as_status 0 "Off" 1 "Emergency" 2 "Ready" 3 "Driving" 4 "Finished" ;
+VAL_ 2018 cmd 0 "POLL" 1 "ENTER" 2 "CAPTURE" 3 "READ_STORED" 4 "READ_STAGED" 5 "COMMIT" 6 "ABORT" 7 "RESET_DEFAULTS" ;
+VAL_ 2018 arg 1 "APPS_REST" 2 "APPS_FULL" 3 "BRAKE_REST" 4 "BRAKE_PRESSED" 5 "APPS_MID" ;

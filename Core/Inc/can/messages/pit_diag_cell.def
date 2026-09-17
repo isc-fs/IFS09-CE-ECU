@@ -1,0 +1,34 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x709  PitDiag_cell -- the low-cell derate estimator, laid open. 100 ms while
+ * enabled.
+ *
+ * This frame exists to COMMISSION CellIrMilliOhm, which is the one number in
+ * the derate that has to come from the car. The method needs no dyno: stream
+ * pit-diag, do one acceleration run, and plot est_ocv_mV against raw_mV.
+ *
+ *   raw_mV     dips hard under load -- that is the ohmic sag, and it is exactly
+ *              what the old derate reacted to
+ *   est_ocv_mV should stay FLAT through the same run
+ *
+ * Still dips -> CellIrMilliOhm too low. Humps upward -> too high. comp_mV shows
+ * how much correction is being applied, so the two can be read apart instead of
+ * inferred from the sum.
+ *
+ * cap_pct is the torque CEILING (torque = min(torque, cap_pct)), not a scale
+ * factor -- it stopped multiplying demand in #177. The flags say which path
+ * produced it: compensated=0 means the current signal went stale and
+ * the derate fell back to the raw loaded voltage; raw_floor=1 means the
+ * backstop fired and the estimate was ignored entirely.
+ */
+
+CAN_MSG(PitDiag_cell, 0x709, 8, "VCU", 100)
+    FIELD_BE   (raw_mV,     uint16_t, 0, 16, 1, 0, "mV")
+    FIELD_BE   (est_ocv_mV, uint16_t, 2, 16, 1, 0, "mV")
+    FIELD_BE_S (comp_mV,    int16_t,  4, 16, 1, 0, "mV")
+    FIELD_LE   (cap_pct,    uint8_t,  6, 8,  1, 0, "%")
+    /* byte 7 flags, one 1-bit DBC signal each (same convention as 0x700) */
+    FIELD_LE_BITS (compensated, uint8_t, 56, 1, 1, 0, "bit")
+    FIELD_LE_BITS (raw_floor,   uint8_t, 57, 1, 1, 0, "bit")
+    FIELD_LE_BITS (capped,      uint8_t, 58, 1, 1, 0, "bit")
+CAN_MSG_END(PitDiag_cell)

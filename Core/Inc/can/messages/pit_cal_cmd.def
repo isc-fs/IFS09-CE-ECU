@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x7E2  PitCal_cmd -- RX, the operator calibration session (#169).
+ *
+ * Lets a pit operator calibrate both pedals over CAN with no rebuild and no
+ * reflash. Answered on 0x7E3; value read-backs arrive on 0x7E4 / 0x7E5.
+ *
+ * byte0 cmd, byte1 arg (capture-point id for CAPTURE, else 0),
+ * bytes 2-3 reserved, bytes 4-7 guard/CRC:
+ *   ENTER, RESET_DEFAULTS -> the constant 0xCA11B0DE, so a stray frame on a
+ *     shared bus cannot open a session or wipe a calibration.
+ *   COMMIT -> a CRC-32 of the STAGED SET, not the constant. A client that has
+ *     lost track of the session therefore cannot commit values it does not
+ *     actually hold; the guard and the consistency check are the same field.
+ *   everything else -> ignored.
+ *
+ * Requires the pit-diag stream armed (0x7E0): live pedal values come from
+ * 0x701, and the operator cannot capture what they cannot see.
+ */
+
+CAN_MSG(PitCal_cmd, 0x7E2, 8, "Pit_Tool", 0)
+    FIELD_LE (cmd,      uint8_t,  0, 8,  1, 0, "enum")
+    FIELD_LE (arg,      uint8_t,  1, 8,  1, 0, "enum")
+    FIELD_BE (guard,    uint32_t, 4, 32, 1, 0, "guard")
+CAN_MSG_END(PitCal_cmd)
+
+#ifdef ECU_DSL_VALUES_PASS
+CAN_VAL(PitCal_cmd, cmd, 0, "POLL")
+CAN_VAL(PitCal_cmd, cmd, 1, "ENTER")
+CAN_VAL(PitCal_cmd, cmd, 2, "CAPTURE")
+CAN_VAL(PitCal_cmd, cmd, 3, "READ_STORED")
+CAN_VAL(PitCal_cmd, cmd, 4, "READ_STAGED")
+CAN_VAL(PitCal_cmd, cmd, 5, "COMMIT")
+CAN_VAL(PitCal_cmd, cmd, 6, "ABORT")
+CAN_VAL(PitCal_cmd, cmd, 7, "RESET_DEFAULTS")
+CAN_VAL(PitCal_cmd, arg, 1, "APPS_REST")
+CAN_VAL(PitCal_cmd, arg, 2, "APPS_FULL")
+CAN_VAL(PitCal_cmd, arg, 3, "BRAKE_REST")
+CAN_VAL(PitCal_cmd, arg, 4, "BRAKE_PRESSED")
+CAN_VAL(PitCal_cmd, arg, 5, "APPS_MID")
+#endif

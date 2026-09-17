@@ -1,0 +1,29 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x706  PitDiag_inverter_temps -- the NX/EMC inverter's four temperatures,
+ * forwarded from 0x464 (EMC_TX_STATE_5). Each byte is the raw inverter reading;
+ * the -50 offset makes it degC on decode (NX encoding). 205 degC (raw 0xFF) is
+ * the inverter's "sensor disconnected" sentinel. 100 ms while pit-diag enabled.
+ *
+ * Bytes 4-6 carry the MOTOR THERMAL CAP derived from motor1/motor2 (#177):
+ * motor_temp_used_degC is the filtered hottest VALID sensor -- which is not
+ * necessarily either raw byte, since 0xFF and implausibly-cold readings are
+ * rejected. temp_unknown = 1 means neither sensor was usable and the cap is
+ * sitting at MotorTempUnknownCapPct; that is the case worth watching for,
+ * because raw 0 decodes to -50 degC and a naive reading of it looks healthy.
+ */
+
+CAN_MSG(PitDiag_inverter_temps, 0x706, 7, "VCU", 100)
+    FIELD_LE (temp_board_degC,  uint8_t, 0, 8, 1, -50, "degC")
+    FIELD_LE (temp_pwrstg_degC, uint8_t, 1, 8, 1, -50, "degC")
+    FIELD_LE (temp_motor1_degC, uint8_t, 2, 8, 1, -50, "degC")
+    FIELD_LE (temp_motor2_degC, uint8_t, 3, 8, 1, -50, "degC")
+    /* bytes 4-6: the thermal cap that these temperatures produced. Grown from
+     * DLC 4; bytes 0-3 keep their offsets, so an existing decoder is unaffected. */
+    FIELD_LE (motor_temp_used_degC, uint8_t, 4, 8, 1, -50, "degC")
+    FIELD_LE (thermal_cap_pct,      uint8_t, 5, 8, 1,   0, "%")
+    FIELD_LE_BITS (temp_s1_valid,   uint8_t, 48, 1, 1, 0, "bit")
+    FIELD_LE_BITS (temp_s2_valid,   uint8_t, 49, 1, 1, 0, "bit")
+    FIELD_LE_BITS (temp_unknown,    uint8_t, 50, 1, 1, 0, "bit")
+    FIELD_LE_BITS (thermal_capped,  uint8_t, 51, 1, 1, 0, "bit")
+CAN_MSG_END(PitDiag_inverter_temps)

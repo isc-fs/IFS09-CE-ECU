@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x511  VCU_r2d_confirm -- TX to uDV (#17). byte0 != 0 confirms the ECU
+ * accepted the 0x510 request and entered ready-to-drive; uDV starts the
+ * autonomous acceleration stream (0x507) on it. Emitted on the DV R2D
+ * transition (acyclic).
+ */
+
+CAN_MSG(VCU_r2d_confirm, 0x511, 1, "VCU", 0)
+    FIELD_LE (r2d_confirm, uint8_t, 0, 8, 1, 0, "bool")
+CAN_MSG_END(VCU_r2d_confirm)

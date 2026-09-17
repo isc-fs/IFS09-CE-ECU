@@ -1,0 +1,42 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x70B  PitDiag_inv_foc -- the inverter's FOC feedback, forwarded from
+ * EMC_TX_STATE_4 (0x463) and EMC_TX_STATE_6 (0x465). 100 ms while pit-diag is
+ * enabled.
+ *
+ * These signals were ALREADY ARRIVING and simply never decoded: 0x463 was
+ * parsed for EMachine_Speed_erpm alone while bytes 0-5 -- the D/Q currents and
+ * the voltage modulus -- were discarded (#177).
+ *
+ *   current_q_A   the TORQUE-PRODUCING axis. If this plateaus while
+ *                 torque_req on 0x70C keeps climbing, the inverter is limiting
+ *                 and this is where you see it first.
+ *   current_d_A   flux axis. Large negative at speed = field weakening.
+ *   volt_modulus  per-mille of available bus voltage the modulator is using.
+ *                 NEAR 1000 MEANS THERE IS NO MORE VOLTAGE: the inverter
+ *                 physically cannot push more current at this speed, and no
+ *                 ECU-side change lifts it. This is the ordinary reason torque
+ *                 falls off at the top of the straight, and it is NOT a fault.
+ *
+ * ctrl_mode / ctrl_type / cmd_src come from 0x465 and say which control law is
+ * running and where it is taking its setpoint. Worth checking before trusting
+ * that Torque_Nm_Req on 0x362 is even the active command.
+ *
+ * The four fresh bits are per-frame, NOT bus-level: 0x461/0x463/0x464/0x466 all
+ * stamp the shared inverter tick, so it cannot tell you that 0x467 in
+ * particular went quiet -- and a frozen "max feasible torque" reads as a
+ * perfectly healthy ceiling.
+ */
+
+CAN_MSG(PitDiag_inv_foc, 0x70B, 8, "VCU", 100)
+    FIELD_LE_S (current_d_A,   int16_t,  0, 16, 0.03125, 0, "A")
+    FIELD_LE_S (current_q_A,   int16_t,  2, 16, 0.03125, 0, "A")
+    FIELD_LE   (volt_modulus,  uint16_t, 4, 16, 1, 0, "permil")
+    FIELD_LE_BITS (ctrl_mode,  uint8_t, 48, 4, 1, 0, "enum")
+    FIELD_LE_BITS (ctrl_type,  uint8_t, 52, 4, 1, 0, "enum")
+    FIELD_LE_BITS (cmd_src,    uint8_t, 56, 4, 1, 0, "enum")
+    FIELD_LE_BITS (s4_fresh,   uint8_t, 60, 1, 1, 0, "bit")
+    FIELD_LE_BITS (s6_fresh,   uint8_t, 61, 1, 1, 0, "bit")
+    FIELD_LE_BITS (s8_fresh,   uint8_t, 62, 1, 1, 0, "bit")
+    FIELD_LE_BITS (s9_fresh,   uint8_t, 63, 1, 1, 0, "bit")
+CAN_MSG_END(PitDiag_inv_foc)

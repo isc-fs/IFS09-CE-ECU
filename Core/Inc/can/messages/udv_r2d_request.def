@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x510  UDV_r2d_request -- RX from uDV (#17). byte0 != 0 requests the
+ * ready-to-drive transition for the autonomous mission (uDV asserts it after
+ * the RES GO). The ECU honours it ONLY while its own brake sensor confirms
+ * the EBS is holding hard braking (brake_raw > config::BrakeDvHardRaw --
+ * the 0x505 verdict); no start button in DV. Firing this edge latches DV
+ * mode for the drive cycle; the ECU confirms on 0x511.
+ */
+
+CAN_MSG(UDV_r2d_request, 0x510, 1, "uDV", 0)
+    FIELD_LE (r2d_request, uint8_t, 0, 8, 1, 0, "bool")
+CAN_MSG_END(UDV_r2d_request)

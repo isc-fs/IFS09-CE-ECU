@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x504  VCU_ts_active -- TX to uDV (#17). Tractive-system-active flag for the
+ * autonomous pipeline: byte0 != 0 means TS active. Derived from the same
+ * ok_precharge/HV-live view the start FSM uses. Periodic on the ACU bus
+ * (FDCAN2, shared with the AMS); 0x500-0x502 are reserved for the AS
+ * datalogger, the 0x50x block is the autonomy cluster.
+ */
+
+CAN_MSG(VCU_ts_active, 0x504, 1, "VCU", 100)
+    FIELD_LE (ts_active, uint8_t, 0, 8, 1, 0, "bool")
+CAN_MSG_END(VCU_ts_active)

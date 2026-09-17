@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x703  PitDiag_fwinfo -- firmware semantic version + the first 4 bytes of
+ * the git hash. 100 ms while enabled. git_hash is big-endian so it reads as
+ * the hex prefix; the adapter packs git4[0]<<24 | git4[1]<<16 | ...
+ */
+
+CAN_MSG(PitDiag_fwinfo, 0x703, 7, "VCU", 100)
+    FIELD_LE (fw_major, uint8_t,  0, 8,  1, 0, "")
+    FIELD_LE (fw_minor, uint8_t,  1, 8,  1, 0, "")
+    FIELD_LE (fw_patch, uint8_t,  2, 8,  1, 0, "")
+    FIELD_BE (git_hash, uint32_t, 3, 32, 1, 0, "hex")
+CAN_MSG_END(PitDiag_fwinfo)

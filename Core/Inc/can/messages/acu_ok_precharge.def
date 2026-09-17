@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x020  ACU_ok_precharge -- RX from the AMS. Set iff the AMS FSM is in
+ * Run|Charge (precharge complete / HV live). The ECU's start FSM gates on it
+ * and re-arms when it falls. AMS-owned layout (see IFS08-CE-AMS
+ * acu_ok_precharge.def); the ECU consumes it.
+ */
+
+CAN_MSG(ACU_ok_precharge, 0x020, 1, "AMS", 100)
+    FIELD_LE (ok_precharge, uint8_t, 0, 8, 1, 0, "bool")
+CAN_MSG_END(ACU_ok_precharge)

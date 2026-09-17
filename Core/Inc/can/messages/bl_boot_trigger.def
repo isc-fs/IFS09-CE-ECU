@@ -1,0 +1,10 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x002  BL_boot_trigger -- RX. Magic (0xB0 07 AD 12 for the ECU) requesting a
+ * jump to the CAN bootloader. On match the ECU writes the boot magic to an RTC
+ * backup register and NVIC_SystemReset()s. See bootloader.cpp.
+ */
+
+CAN_MSG(BL_boot_trigger, 0x002, 4, "Pit_Tool", 0)
+    FIELD_BE (magic, uint32_t, 0, 32, 1, 0, "magic")
+CAN_MSG_END(BL_boot_trigger)

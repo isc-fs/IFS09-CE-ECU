@@ -1,0 +1,28 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x509  VCU_gps_status -- TX on the ACU bus (FDCAN2), companion to 0x508.
+ * Speed/course over ground plus the fix quality that says whether 0x508 (and
+ * the speed here) can be trusted. Ungated, 5 Hz -- see 0x508 for why.
+ *
+ * speed_kmh  NMEA reports speed over ground in KNOTS; the ECU converts to
+ *            km/h (x1.852, integer, round-to-nearest -- gps_nmea.cpp) because
+ *            km/h is the car's unit. Sent as km/h*100, DBC scale 0.01.
+ * course_deg Course over ground (true), deg*100. Meaningless at standstill --
+ *            NMEA course is undefined below walking pace.
+ * sats       Satellites in view (GGA). Useful even with no fix: it shows the
+ *            antenna is seeing sky.
+ * has_fix    1 = RMC status 'A' / GGA quality != 0. GATE every use of the
+ *            position and speed on this bit.
+ * nmea_count Sentences successfully parsed since boot, wrapping u16. LIVENESS:
+ *            it climbs whenever the module is wired and talking, even with no
+ *            fix -- so a frozen counter means a UART/wiring fault, while
+ *            has_fix=0 with a climbing counter just means no sky yet.
+ */
+
+CAN_MSG(VCU_gps_status, 0x509, 8, "VCU", 200)
+    FIELD_LE      (speed_kmh,  uint16_t, 0, 16, 0.01, 0, "km/h")
+    FIELD_LE      (course_deg, uint16_t, 2, 16, 0.01, 0, "deg")
+    FIELD_LE      (sats,       uint8_t,  4, 8,  1,    0, "count")
+    FIELD_LE_BITS (has_fix,    uint8_t,  40, 1, 1,    0, "bool")
+    FIELD_LE      (nmea_count, uint16_t, 6, 16, 1,    0, "count")
+CAN_MSG_END(VCU_gps_status)

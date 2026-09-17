@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x705  PitDiag_brake -- physical brake values from the S_BRAKE pressure
+ * sensor (raw is in 0x701). 100 ms while enabled. Both depend on the PENDING
+ * brake calibration in ecu_config.hpp.
+ */
+
+CAN_MSG(PitDiag_brake, 0x705, 3, "VCU", 100)
+    FIELD_BE (brake_pressure, uint16_t, 0, 16, 0.1, 0, "bar")
+    FIELD_LE (brake_pct,      uint8_t,  2, 8,  1,   0, "%")
+CAN_MSG_END(PitDiag_brake)

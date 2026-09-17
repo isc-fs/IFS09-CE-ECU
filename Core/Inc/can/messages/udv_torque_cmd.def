@@ -1,0 +1,14 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x507  UDV_torque_cmd -- RX from uDV (#17). The autonomous torque command
+ * as an INTEGER percentage (agreed with the DV team 2026-07-03, replacing the
+ * original float32 idea): int32 little-endian, 0..100. The ECU conditions it
+ * fail-safe (negative -> 0, > 100 clamps to 100) and it rides the same
+ * inverter map as the pedals (10..100% -> 0..240 units, ECU-owned negation).
+ * Only consumed while the DV drive mode is latched; stale stream => torque 0
+ * (never APPS).
+ */
+
+CAN_MSG(UDV_torque_cmd, 0x507, 4, "uDV", 20)
+    FIELD_LE_S (torque_pct, int32_t, 0, 32, 1, 0, "%")
+CAN_MSG_END(UDV_torque_cmd)

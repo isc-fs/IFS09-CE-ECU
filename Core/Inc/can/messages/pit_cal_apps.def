@@ -1,0 +1,14 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x7E4  PitCal_apps -- TX. The four APPS endpoints, emitted after
+ * READ_STORED or READ_STAGED. Always sent as the pair 0x7E3 -> 0x7E4 -> 0x7E5;
+ * the last_cmd echo in the preceding 0x7E3 tells the client which set it is
+ * looking at (#169).
+ */
+
+CAN_MSG(PitCal_apps, 0x7E4, 8, "VCU", 0)
+    FIELD_BE (apps1_min, uint16_t, 0, 16, 1, 0, "adc")
+    FIELD_BE (apps1_max, uint16_t, 2, 16, 1, 0, "adc")
+    FIELD_BE (apps2_min, uint16_t, 4, 16, 1, 0, "adc")
+    FIELD_BE (apps2_max, uint16_t, 6, 16, 1, 0, "adc")
+CAN_MSG_END(PitCal_apps)

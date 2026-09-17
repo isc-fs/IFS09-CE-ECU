@@ -1,0 +1,41 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x021  ACU_discharge_interlock -- RX from the AMS. The two facts only the AMS
+ * can observe, published so the ECU can decide whether to secure the DC-link
+ * discharge (#198).
+ *
+ * >>> MIRRORS isc-fs/IFS08-CE-AMS Core/Inc/can/messages/acu_discharge_interlock.def
+ * >>> FIELD FOR FIELD. The AMS owns this layout. Diff the two on any AMS bump.
+ *
+ * NOT A REQUEST. Both fields are raw observations. The AMS deliberately does not
+ * send a pre-computed "please discharge", because the ECU owns the third term --
+ * its own DC-link measurement -- and routing that decision through a CAN frame
+ * would put a stale value in the middle of the judgement. The ECU therefore
+ * computes:
+ *
+ *     secure = fsm_in_start AND tsms AND (own dc_bus > DischargeReleaseV)
+ *
+ * latched on entry, released on the ECU's own measurement falling. See
+ * discharge.hpp.
+ *
+ * The first cut of this file got it wrong: it declared a single `request` bit at
+ * bit 0 and ignored bit 1. Bit 0 is fsm_in_start, so the ECU read "the AMS is in
+ * Start" as a complete instruction to discharge -- tsms never entered the
+ * decision, and with a drained link and a stale 0x466 it would secure on every
+ * entry to Start and hold to the 30 s timeout. Kept in the history deliberately:
+ * two repos agreeing on an ID while disagreeing about its fields is the failure
+ * mode this comment exists to prevent.
+ */
+
+CAN_MSG(ACU_discharge_interlock, 0x021, 1, "AMS", 100)
+    /* FSM is in Start: AIR-, AIR+ and precharge are ALL commanded open, so any
+     * voltage on the link is left over rather than something the AMS is putting
+     * there. Excludes Precharge/Transition, where the link is deliberately
+     * rising through the resistor and a forced discharge would fight it. */
+    FIELD_LE_BITS (fsm_in_start, uint8_t, 0, 1, 1, 0, "bool")
+    /* Shutdown circuit is complete (AMS PF9). Any open shutdown element pulls
+     * this low, so tsms = 1 means the discharge relay is energised and the bleed
+     * is DISCONNECTED -- the normal discharge path is NOT running, which is
+     * exactly the condition under which a stranded link needs the ECU. */
+    FIELD_LE_BITS (tsms,         uint8_t, 1, 1, 1, 0, "bool")
+CAN_MSG_END(ACU_discharge_interlock)

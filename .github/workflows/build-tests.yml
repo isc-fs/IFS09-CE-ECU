@@ -1,0 +1,174 @@
+﻿name: Build and tests
+
+# Two jobs:
+#   sil-tests       — host SIL suite: self-contained (no hardware, no network/Unity).
+#                     Compiles the PURE control core -- sil_control_tests.cpp plus
+#                     Core/Src/app/{control,inverter,vehicle_service,udv_tx,
+#                     radio_snapshot,gps_nmea,gps_tx}.cpp -- and nothing else. There are NO mocks and
+#                     NO freertos.c/HAL sources in this target: those files are
+#                     HAL-free and RTOS-free by design, and Controller::step() takes
+#                     now_ms as an argument, so the suite is deterministic host code.
+#                     Covers the start/R2D FSM, torque path, the FSAE plausibility
+#                     cuts, the inverter ladder, CAN decode and the radio wire format.
+#                     Does NOT cover: the task layer, HAL/peripherals, io_signals,
+#                     pit_diag (#9) or the nRF24 transport -- those are bench/HIL.
+#                     Regression gate for the control core.
+#   firmware-build  — arm-none-eabi cross-compile for STM32H733 (firmware/),
+#                     then check_flash_layout.py enforces the image is
+#                     bootloader-compatible (app at 0x08020000, sectors 0 & 7
+#                     clear), plus a size report.
+#
+# This matches IFS09-CE-AMS build-tests.yml (host tests + firmware cross-compile
+# + flash-layout guard against isc-fs/stm32-can-bootloader).
+
+on:
+  push:
+    branches: ['feat/**', 'fix/**', dev, main]
+  pull_request:
+    branches: ['feat/**', dev, main]
+  workflow_dispatch:
+
+jobs:
+  sil-tests:
+    name: Host SIL suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SIL (host, no unit/Unity, no network)
+        run: cmake -B build-sil -S . -DBUILD_UNIT_TESTS=OFF -DBUILD_SIL_TESTS=ON
+
+      - name: Build SIL
+        run: cmake --build build-sil -j
+
+      - name: Run SIL suites
+        run: |
+          set -u
+          SIL=build-sil/tests/sil/ecu09_sil
+          test -x "$SIL" || { echo "::error::SIL binary not found at $SIL"; exit 1; }
+          # ONE flag: --test-all. This used to be a hand-maintained list of twelve
+          # suite flags, and it had rotted into a trap. --test-safety-brake was
+          # retired with the EV.2.3 removal, and an UNRECOGNISED flag makes this
+          # binary run the whole suite -- so that one dead entry was silently the
+          # only reason every suite added this season was covered at all. Tidying
+          # the dead flag away would have quietly dropped CI to eleven suites.
+          # The release workflow already gates on --test-all; matching it here
+          # means PR CI and the release gate run the same thing on purpose.
+          flags="--test-all"
+          fail=0
+          for flag in $flags; do
+            out=$("$SIL" $flag 2>&1) ; code=$?
+            # Defensive: trip on a non-zero exit OR any failure marker in the
+            # output (some suites print failures without setting the exit code).
+            if [ "$code" -ne 0 ] || printf '%s\n' "$out" \
+                 | grep -qiE '\[FAIL\]|FALLARON|checks failed|FALLOS: [1-9]|HAY TESTS FALLIDOS'; then
+              echo "::error::SIL $flag FAILED (exit=$code)"
+              printf '%s\n' "$out" | grep -iE '\[FAIL\]|FALLOS|FALLARON|checks failed' | head -20
+              fail=1
+            else
+              echo "PASS  $flag"
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "All SIL suites passed." || { echo "::error::One or more SIL suites failed"; exit 1; }
+
+      # The "DBC matches the code-first CAN DSL" check that used to live
+      # here was retired when the dbcinator bot took over docs/dbc/ecu.dbc
+      # maintenance -- see .github/workflows/dbc-bot.yml. The bot
+      # regenerates the DBC on every PR and force-pushes the result onto
+      # the PR branch, so a parallel diff check here would either be
+      # redundant or race with the bot's commit.
+
+  firmware-build:
+    name: Firmware cross-compile (arm-none-eabi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arm-none-eabi toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '14.2.Rel1'
+
+      # Runs BEFORE the build: it is a source check, and failing fast on a
+      # regen-clobbered MessageRAM layout beats waiting on a compile that would
+      # succeed anyway (the defect is silent at build time -- it only shows up
+      # as dead CAN TX on the car).
+      - name: Verify FDCAN MessageRAM layout (no overlap -- #48 guard)
+        run: python3 scripts/check_fdcan_ram.py Core/Src/fdcan.c
+
+      - name: Configure CMake (cross)
+        run: cmake -S firmware -B build-fw -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/gcc-arm-none-eabi.cmake"
+
+      - name: Build firmware
+        run: cmake --build build-fw -j
+
+      - name: Verify bootloader-compatible flash layout
+        run: |
+          python3 scripts/check_flash_layout.py build-fw/ECU09.elf | tee layout.log
+          {
+            echo "## Flash layout vs. stm32-can-bootloader"
+            echo '```'
+            cat layout.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report firmware size
+        run: |
+          test -f build-fw/ECU09.elf || { echo "::error::ECU09.elf not produced"; exit 1; }
+          {
+            echo "## Firmware size (STM32H733)"
+            echo '```'
+            arm-none-eabi-size --format=berkeley build-fw/ECU09.elf
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Cross-repo CAN contract. Added after the 0x021 incident (Aug 2026): the ECU
+  # and the AMS agreed on a frame ID while disagreeing about its fields, and
+  # nothing in either repo could notice.
+  #
+  # >>> THIS ONLY DOES REAL WORK IF AMS_REPO_TOKEN IS SET. <<<
+  # GITHUB_TOKEN is scoped to THIS repository, so it cannot check out the AMS.
+  # Without a cross-repo token the script SKIPs and the job passes green while
+  # comparing nothing -- which is worse than no check, so the skip says so
+  # loudly in the log. To make it live, add a repo secret AMS_REPO_TOKEN (a PAT
+  # or GitHub App token with read access to isc-fs/IFS09-CE-AMS).
+  #
+  # Until then this is a LOCAL pre-flight: run it yourself before any PR that
+  # touches a shared frame --
+  #     python3 scripts/check_ams_contract.py
+  # with IFS08-CE-AMS checked out alongside this repo.
+  #
+  # continue-on-error: a token or permissions problem in another repo must never
+  # block an ECU PR.
+  ams-contract:
+    name: Cross-repo CAN contract (AMS)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      # Must land INSIDE the workspace -- actions/checkout rejects a path above
+      # it, which is how the first version of this job silently skipped.
+      - name: Check out IFS08-CE-AMS
+        id: ams
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: isc-fs/IFS09-CE-AMS
+          # dev, NOT the default branch. Both repos develop on dev and release
+          # via main, so dev-vs-dev is the comparison a PR should be held to.
+          # Checking against AMS main immediately flagged a REAL divergence the
+          # first time this ran: their main still has 0x100 at DLC 2 and no
+          # 0x021 at all, because the #198 work lives on their dev. That is a
+          # RELEASE ordering hazard -- documented in docs/flashing.md -- not
+          # something an ECU pull request can fix, so it does not belong here.
+          ref: dev
+          path: _ams
+          token: ${{ secrets.AMS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Diff the shared frames
+        run: |
+          if [ ! -f _ams/docs/dbc/ams.dbc ]; then
+            echo "::warning::AMS checkout unavailable -- this check compared NOTHING."
+            echo "::warning::Set the AMS_REPO_TOKEN secret to make it real. Run it locally meanwhile."
+            exit 0
+          fi
+          python3 scripts/check_ams_contract.py _ams/docs/dbc/ams.dbc

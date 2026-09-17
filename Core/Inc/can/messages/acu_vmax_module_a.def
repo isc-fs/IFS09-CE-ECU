@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x133  ACU_vmax_module_a -- RX from the AMS. Per-module maximum cell
+ * voltage, modules 0..2 (mV, big-endian). Feeds the dash per-module display
+ * (0x51E on CAN3). AMS-owned layout (see IFS08-CE-AMS
+ * acu_vmax_module_a.def); the ECU consumes it.
+ */
+
+CAN_MSG(ACU_vmax_module_a, 0x133, 6, "AMS", 100)
+    FIELD_BE (vmax_module0, uint16_t, 0, 16, 1, 0, "mV")
+    FIELD_BE (vmax_module1, uint16_t, 2, 16, 1, 0, "mV")
+    FIELD_BE (vmax_module2, uint16_t, 4, 16, 1, 0, "mV")
+CAN_MSG_END(ACU_vmax_module_a)

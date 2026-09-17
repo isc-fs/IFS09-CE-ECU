@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x7E5  PitCal_brake -- TX. The brake span and the three thresholds derived
+ * from it, emitted alongside 0x7E4 (#169).
+ *
+ * brake_rest 0 means the rest point has never been captured, which is why
+ * brake_pct still falls back to full-ADC-range scaling and reads ~13% with the
+ * pedal released.
+ */
+
+CAN_MSG(PitCal_brake, 0x7E5, 8, "VCU", 0)
+    FIELD_BE (brake_rest,    uint16_t, 0, 16, 1, 0, "adc")
+    FIELD_BE (brake_arm,     uint16_t, 2, 16, 1, 0, "adc")
+    FIELD_BE (brake_dv_hard, uint16_t, 4, 16, 1, 0, "adc")
+    FIELD_BE (brake_pressed, uint16_t, 6, 16, 1, 0, "adc")
+CAN_MSG_END(PitCal_brake)

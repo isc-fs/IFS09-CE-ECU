@@ -1,0 +1,58 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x702  PitDiag_inverter -- inverter DC-bus voltage, motor speed (SIGNED,
+ * MECHANICAL shaft rpm: the inverter reports ELECTRICAL rpm on 0x463 and the
+ * builder converts, erpm / MotorPolePairs(10) -- same convention as the uDV
+ * 0x506 feed), and the inverter error/state code. Decoded from the NX/EMC
+ * frames (0x466 DCBus_Voltage_V, 0x463 EMachine_Speed_erpm, 0x461 DEM_Code).
+ * 100 ms while enabled.
+ *
+ * byte6   inv_error     NX DEM_Code low byte (raw; 0 = no fault). Names below.
+ * byte7 bit0 dem_present 1 = the DEM condition is ACTIVE now, 0 = latched
+ *            history (fault gone but code retained). Lets the pit tool tell a
+ *            live inverter fault from a stale boot latch (0x461 byte3 bit7).
+ * byte7 b1-7 inv_mode_cmd  the App_State_Req the ECU is COMMANDING on 0x360
+ *            right now. Everything else here is what the inverter REPORTS;
+ *            without this you cannot tell "ECU commands 0x01 and the inverter
+ *            refuses to leave off" from "ECU is commanding the wrong word" --
+ *            which is exactly the ambiguity that stalled the TS-off recovery
+ *            debug (#148). 7 bits holds every mode (max 0x13 = 19).
+ */
+
+CAN_MSG(PitDiag_inverter, 0x702, 8, "VCU", 100)
+    FIELD_BE   (dc_bus_voltage, uint16_t, 0, 16, 1, 0, "V")
+    FIELD_BE_S (inv_rpm,        int32_t,  2, 32, 1, 0, "rpm")
+    FIELD_LE   (inv_error,      uint8_t,  6, 8,  1, 0, "code")
+    FIELD_LE_BITS (dem_present,  uint8_t, 56, 1, 1, 0, "bit")
+    FIELD_LE_BITS (inv_mode_cmd, uint8_t, 57, 7, 1, 0, "req")
+CAN_MSG_END(PitDiag_inverter)
+
+/* DEM_Code names -- EPowerLabs W90 (EMC150) DEM table, section 9.2.3 of the
+ * W90 User Manual. Seen only by the host dbc_dump build (ECU_DSL_VALUES_PASS);
+ * zero flash. The inverter's own DBC carries no VAL_ tables, so these live here. */
+#ifdef ECU_DSL_VALUES_PASS
+CAN_VAL(PitDiag_inverter, inv_error,  0, "NoFault")
+CAN_VAL(PitDiag_inverter, inv_error,  1, "LostMsg")
+CAN_VAL(PitDiag_inverter, inv_error,  2, "Undervoltage")
+CAN_VAL(PitDiag_inverter, inv_error,  3, "PwrStgOvertemp")
+CAN_VAL(PitDiag_inverter, inv_error,  4, "PwrStgTempDegradation")
+CAN_VAL(PitDiag_inverter, inv_error,  5, "EMCtrFault")
+CAN_VAL(PitDiag_inverter, inv_error,  6, "TaskOverrun")
+CAN_VAL(PitDiag_inverter, inv_error,  7, "CAN1_BusOff")
+CAN_VAL(PitDiag_inverter, inv_error,  8, "EmachineOvertemp")
+CAN_VAL(PitDiag_inverter, inv_error,  9, "PhaseCurrentSensorRange")
+CAN_VAL(PitDiag_inverter, inv_error, 10, "PwrStgTempSensorRange")
+CAN_VAL(PitDiag_inverter, inv_error, 11, "DCBusVoltageSensorRange")
+CAN_VAL(PitDiag_inverter, inv_error, 12, "DPBoardOvertemp")
+CAN_VAL(PitDiag_inverter, inv_error, 13, "DRVBoardOvertemp")
+CAN_VAL(PitDiag_inverter, inv_error, 14, "AuxSupplyRange")
+CAN_VAL(PitDiag_inverter, inv_error, 15, "EmachineOverspeed")
+
+/* The mode word the ECU is COMMANDING (ecu::InvMode -> 0x360 App_State_Req).
+ * DECIMAL values here: InvMode::HardFaultReset is 0x0D = 13, Fault is 0x13 = 19. */
+CAN_VAL(PitDiag_inverter, inv_mode_cmd,  1, "Off")             /* 0x01 */
+CAN_VAL(PitDiag_inverter, inv_mode_cmd,  4, "Ready")           /* 0x04 */
+CAN_VAL(PitDiag_inverter, inv_mode_cmd,  6, "TorqueEnable")    /* 0x06 */
+CAN_VAL(PitDiag_inverter, inv_mode_cmd, 13, "HardFaultReset")  /* 0x0D */
+CAN_VAL(PitDiag_inverter, inv_mode_cmd, 19, "Fault")           /* 0x13 */
+#endif

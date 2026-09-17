@@ -1,0 +1,46 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x70D  PitDiag_power -- everything needed to MEASURE drivetrain efficiency,
+ * on one frame. 100 ms while pit-diag is enabled.
+ *
+ * THIS FRAME EXISTS TO RETIRE AN ASSUMPTION. The EV 2.2.1 envelope caps
+ * COMMANDED SHAFT torque, but the rule is judged on a 500 ms moving average at
+ * the TSAC OUTLET. The bridge between the two is DrivetrainEffPct, which has
+ * never been measured on this car -- it is the entire compliance margin, and it
+ * was a guess. Everything required to replace that guess with a number is here:
+ *
+ *   shaft_power    COMMANDED mechanical power, torque_nm * omega. What the
+ *                  envelope thinks it is limiting.
+ *   ac_power       the INVERTER'S OWN measurement of its AC output
+ *                  (ACBus_Power_W on 0x466). It was arriving all along on the
+ *                  same frame as the DC-bus voltage, and the handler guarded
+ *                  dlc < 4 and dropped bytes 3-5.
+ *   dc_bus_V x accu_current  = DC power at the accumulator, which is the side
+ *                  the rule is actually judged on.
+ *
+ * So, from one capture at steady full throttle just under the knee:
+ *   motor+gearbox efficiency = shaft_power / ac_power
+ *   TOTAL efficiency         = shaft_power / (dc_bus_V * accu_current)
+ * and that second number is what DrivetrainEffPct should be set to.
+ *
+ * accu_current comes from the AMS on 0x135, NOT from the inverter -- the two
+ * live on different buses, which is exactly why having them side by side here
+ * is worth a frame of its own.
+ *
+ * >>> SIGN. <<< shaft_power is positive for forward drive. ac_power is signed as
+ * the inverter reports it. The torque on the WIRE is negated (a mechanical
+ * constraint of the motor mounting, see inverter.cpp) -- that negation is NOT
+ * applied here, so a healthy forward pull should show both of these POSITIVE.
+ * If ac_power comes back negative under acceleration, the decode is wrong, not
+ * the inverter.
+ *
+ * Both powers are in units of 10 W (s16 -> +/-327 kW), which is finer than any
+ * decision made from them and keeps the frame at one CAN payload.
+ */
+
+CAN_MSG(PitDiag_power, 0x70D, 8, "VCU", 100)
+    FIELD_LE_S (shaft_power,  int16_t,  0, 16, 10,  0, "W")
+    FIELD_LE_S (ac_power,     int16_t,  2, 16, 10,  0, "W")
+    FIELD_LE   (dc_bus_V,     uint16_t, 4, 16, 1,   0, "V")
+    FIELD_LE_S (accu_current, int16_t,  6, 16, 0.1, 0, "A")
+CAN_MSG_END(PitDiag_power)

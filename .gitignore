@@ -1,0 +1,51 @@
+# Build outputs
+Debug/
+build/
+build-*/
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.hex
+*.bin
+
+# IDE files
+.settings/
+.cproject
+.project
+.classpath
+*.swp
+*.swo
+*~
+
+# STM32CubeIDE specific
+STM32CubeIDE/
+*.launch
+
+# CMake
+CMakeFiles/
+cmake_install.cmake
+CMakeCache.txt
+Makefile
+
+# Test artifacts
+test_output/
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+
+# Editor / IDE local config — .vscode/settings.json is the ONE shared file
+# (committed for the team's ISC MingoCAN flasher build+flash config);
+# everything else in .vscode/ (launch.json, personal tweaks) stays local.
+.vscode/*
+!.vscode/settings.json
+
+# clangd LSP index (was accidentally committed — never version this)
+.cache/

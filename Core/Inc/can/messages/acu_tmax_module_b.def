@@ -1,0 +1,15 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x137  ACU_tmax_module_b -- RX from the AMS. Per-module max temperature,
+ * modules 3..4, + a DCDC temp stub (degC, big-endian signed). Feeds the dash
+ * per-module display + temp_dcdc (0x521 / part of 0x518 on CAN3). AMS-owned
+ * layout (see IFS08-CE-AMS acu_tmax_module_b.def); note tmax_dcdc is a
+ * sentinel on the AMS side until a real DCDC temp sensor is wired -- the ECU
+ * just forwards whatever the AMS sends.
+ */
+
+CAN_MSG(ACU_tmax_module_b, 0x137, 6, "AMS", 250)
+    FIELD_BE_S (tmax_module3, int16_t, 0, 16, 1, 0, "degC")
+    FIELD_BE_S (tmax_module4, int16_t, 2, 16, 1, 0, "degC")
+    FIELD_BE_S (tmax_dcdc,    int16_t, 4, 16, 1, 0, "degC")
+CAN_MSG_END(ACU_tmax_module_b)

@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x135  ACU_currents -- RX from the AMS. Accumulator + DCDC currents in
+ * deciamps (+ = discharge), big-endian signed. Feeds the dash 0x518 group on
+ * CAN3. AMS-owned layout (see IFS08-CE-AMS acu_currents.def); the ECU
+ * consumes it as-is (no re-scaling -- dash gets the same deciamps unit AMS
+ * transmits).
+ */
+
+CAN_MSG(ACU_currents, 0x135, 4, "AMS", 50)
+    FIELD_BE_S (current_accu_dA, int16_t, 0, 16, 0.1, 0, "A")
+    FIELD_BE_S (current_dcdc_dA, int16_t, 2, 16, 0.1, 0, "A")
+CAN_MSG_END(ACU_currents)

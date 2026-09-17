@@ -1,0 +1,159 @@
+name: Close linked issues on merge to dev
+
+# GitHub only auto-closes issues referenced by `Closes #N` when the PR is merged
+# into the repository's default branch. Our workflow merges feat/fix PRs into
+# `dev` instead, so this workflow reproduces the behaviour by parsing the PR
+# body for the standard closing keywords and closing each referenced issue.
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - dev
+
+jobs:
+  close-linked:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Close issues referenced by the PR body
+        uses: actions/github-script@v7
+        env:
+          PR_BODY:   ${{ github.event.pull_request.body }}
+          PR_TITLE:  ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE:   ${{ github.event.pull_request.base.ref }}
+        with:
+          script: |
+            const body    = process.env.PR_BODY  || '';
+            const title   = process.env.PR_TITLE || '';
+            const prNum   = parseInt(process.env.PR_NUMBER, 10);
+            const baseRef = process.env.PR_BASE;
+
+            /* GitHub's own closing keywords:
+                 close, closes, closed, fix, fixes, fixed,
+                 resolve, resolves, resolved
+               Followed by an optional colon and `#N`. */
+            const pattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)/gi;
+
+            /* Negation guard. GitHub's own keyword handling (and the regex
+               above) has no notion of negation, so a PR body that says
+               "this does NOT fix #123" closes #123 anyway. That is not
+               hypothetical: PR #155 said "It does not fix #148" precisely to
+               stop it being mistaken for a fix, and that sentence closed #148
+               on merge. Skip a match when the words just before it negate it. */
+            /* "not" alone covers "does not" / "will not" / "do not"; the
+               n't form is spelled with a character class so a smart apostrophe
+               (doesn’t), which GitHub bodies routinely contain, still matches. */
+            const NEGATION = /(?:\b(?:not|never|cannot|without)|n['\u2019]t)\s*$/i;
+
+            const text = `${title}\n${body}`;
+            const numbers = new Set();
+            for (const m of text.matchAll(pattern)) {
+              const before = text.slice(Math.max(0, m.index - 40), m.index);
+              if (NEGATION.test(before)) {
+                console.log(`Skipping #${m[1]}: closing keyword is negated ("...${before.trim().slice(-30)}").`);
+                continue;
+              }
+              numbers.add(parseInt(m[1], 10));
+            }
+
+            if (numbers.size === 0) {
+              console.log('No closing-keyword references found in PR body or title.');
+              return;
+            }
+
+            for (const n of numbers) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  issue_number: n,
+                });
+                if (issue.pull_request) {
+                  console.log(`#${n} is a PR, skipping.`);
+                  continue;
+                }
+                if (issue.state === 'closed') {
+                  console.log(`#${n} already closed, skipping.`);
+                  continue;
+                }
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  issue_number: n,
+                  state: 'closed',
+                  state_reason: 'completed',
+                });
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  issue_number: n,
+                  body:  `Closed by #${prNum} (merged into \`${baseRef}\`).`,
+                });
+                console.log(`Closed #${n}.`);
+              } catch (err) {
+                console.log(`Could not close #${n}: ${err.message}`);
+              }
+            }
+
+      # The step above only closes what the PR EXPLICITLY references. The
+      # per-branch tracker issues opened by branch-issue.yml tell the author to
+      # write `Closes #N` in the PR description -- but that instruction lives
+      # inside the tracker issue, which nobody reads while opening a PR, so it
+      # is routinely missed and the trackers pile up (nine had accumulated by
+      # 2026-07 before a manual sweep). The branch -> tracker mapping is
+      # deterministic, so close it automatically instead of relying on memory.
+      - name: Close the tracker issue for the merged branch
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF:  ${{ github.event.pull_request.head.ref }}
+          PR_BASE:   ${{ github.event.pull_request.base.ref }}
+        with:
+          script: |
+            const prNum   = parseInt(process.env.PR_NUMBER, 10);
+            const branch  = process.env.HEAD_REF;
+            const baseRef = process.env.PR_BASE;
+
+            if (!branch) { console.log('No head ref; nothing to do.'); return; }
+
+            // branch-issue.yml stamps every tracker with this exact marker.
+            // Match on it (not the title) -- titles get edited, the marker does not.
+            const marker = `## Tracking branch \`${branch}\``;
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            const trackers = issues.filter(i =>
+              !i.pull_request && typeof i.body === 'string' && i.body.includes(marker));
+
+            if (trackers.length === 0) {
+              console.log(`No open tracker found for branch '${branch}'.`);
+              return;
+            }
+
+            for (const t of trackers) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: t.number,
+                body: `Branch \`${branch}\` was merged into \`${baseRef}\` by #${prNum} — closing this branch tracker automatically.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: t.number,
+                state: 'closed',
+                state_reason: 'completed',
+              });
+              console.log(`Closed tracker #${t.number} for branch '${branch}'.`);
+            }

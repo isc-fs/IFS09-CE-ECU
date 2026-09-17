@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: proprietary */
+/*
+ * 0x506  VCU_motor_rpm -- TX to uDV. MECHANICAL shaft rpm for the uDV SLAM /
+ * odometry pipeline. The inverter reports ELECTRICAL rpm (EMachine_Speed_erpm,
+ * RX 0x463, 20-bit signed @ bit44); the ECU converts before sending:
+ * mechanical = erpm / config::MotorPolePairs (10, powertrain-confirmed) --
+ * uDV never needs the pole-pair count. Signed: negative = reverse rotation.
+ * Little-endian to match the uDV STM32-side convention (#17 raw LE payloads).
+ */
+
+CAN_MSG(VCU_motor_rpm, 0x506, 4, "VCU", 10)
+    FIELD_LE_S (motor_rpm, int32_t, 0, 32, 1, 0, "rpm")
+CAN_MSG_END(VCU_motor_rpm)
