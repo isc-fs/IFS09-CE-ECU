@@ -2895,10 +2895,15 @@ static RadioSnapshotInputs radio_test_inputs() {
     in.gps_lat_deg1e7 = 406353900; in.gps_lon_deg1e7 = -36927966;
     in.gps_speed_kmh_x100 = 4148; in.gps_course_deg_x100 = 8440;
     in.gps_sats = 8; in.gps_has_fix = 1;
+    in.inv_pwrstg_bits = 0x0155;
+    in.inv_emctrl_bits = 0x4A;
+    in.inv_torque_est_nm = 125;
+    in.inv_torque_max_feas = 220;
+    in.inv_ac_power_W = 45000;
     return in;
 }
 
-// Print the serialized 102-byte snapshot as one hex line (for the Python
+// Print the serialized 107-byte snapshot as one hex line (for the Python
 // round-trip against the real parser). Header/footer suppressed by main.
 static void dump_radio_snapshot() {
     uint8_t s[kRadioSnapshotWireSize];
@@ -2940,15 +2945,18 @@ static void test_radio_snapshot() {
     CHECK(rd16(s, 64) == 72 && rd16(s, 66) == 68 && rd16(s, 68) == 55, "inv temps @64/66/68");
     CHECK(static_cast<int32_t>(rd32(s, 70)) == -12345, "inv_rpm @70 (signed)");
     CHECK(rd32(s, 74) == 0 && rd32(s, 78) == 0, "inv_speed/current_actual @74/78 (placeholder)");
-    // GPS occupies what used to be the reserved tail (wire size still 102).
+    // GPS occupies bytes 82..95.
     CHECK(static_cast<int32_t>(rd32(s, 82)) ==  406353900, "gps lat @82 (signed)");
     CHECK(static_cast<int32_t>(rd32(s, 86)) ==  -36927966, "gps lon @86 (signed)");
     CHECK(rd16(s, 90) == 4148, "gps speed km/h*100 @90");
     CHECK(rd16(s, 92) == 8440, "gps course deg*100 @92");
     CHECK(s[94] == 8 && s[95] == 1, "gps sats/has_fix @94/95");
-    bool tail_zero = true;
-    for (int i = 96; i < 102; ++i) if (s[i] != 0) tail_zero = false;
-    CHECK(tail_zero, "reserved [96..101] zero");
+    // Inverter extended diagnostics & power telemetry [96..106].
+    CHECK(rd16(s, 96) == 0x0155, "inv_pwrstg_bits @96");
+    CHECK(s[98] == 0x4A,         "inv_emctrl_bits @98");
+    CHECK(static_cast<int16_t>(rd16(s, 99)) == 125, "inv_torque_est_nm @99");
+    CHECK(static_cast<int16_t>(rd16(s, 101)) == 220, "inv_torque_max_feas @101");
+    CHECK(static_cast<int32_t>(rd32(s, 103)) == 45000, "inv_ac_power_W @103");
 
     // Fragmentation: 5 fragments, v2 header, data slices reassemble the snapshot.
     uint8_t reasm[kRadioSnapshotFragments * kRadioFragPayloadSize] = {};
@@ -2963,7 +2971,7 @@ static void test_radio_snapshot() {
     }
     CHECK(hdr_ok, "all 5 fragment headers (magic/ver/idx/tot/seq/kind)");
     CHECK(std::memcmp(reasm, s, kRadioSnapshotWireSize) == 0,
-          "5 fragments reassemble to the 102-byte snapshot");
+          "5 fragments reassemble to the 107-byte snapshot");
 }
 
 // GPS (MTK3339 / USART10) -- the NMEA parser ported from the bench-proven
