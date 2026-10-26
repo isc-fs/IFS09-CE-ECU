@@ -1,4 +1,4 @@
-﻿<img width="470.235" height="179.4" alt="isc-full-primary" src="https://github.com/user-attachments/assets/31365569-11bf-427e-ae3e-8d81ca87d765" />
+<img width="470.235" height="179.4" alt="isc-full-primary" src="https://github.com/user-attachments/assets/31365569-11bf-427e-ae3e-8d81ca87d765" />
 
 # IFS09-CE-ECU
 
@@ -206,28 +206,142 @@ When `dev` holds a set of validated changes that are ready for the car, a respon
 
 ## What the ECU actually does
 
-Pedals in, torque out, with four independent limits on the way:
+Pedals in, validated torque request derived, followed by four independent safety limits and dynamic torque vectoring across the dual independent rear motors:
 
 ```
-APPS1 + APPS2 ──▶ plausibility (T.11.8.9) ──▶ torque map ──┐
+APPS1 + APPS2 ──▶ Plausibility (T.11.8.9) ──▶ Torque Map ──┐
                                                             │
                     ┌───────────────────────────────────────┘
                     ▼
-        min( cell voltage cap, motor thermal cap,
-             pack thermal cap, EV 2.2.1 power cap )
+        min( Cell Voltage Cap, Motor Thermal Cap,
+             Pack Thermal Cap, EV 2.2.1 Power Cap )
                     │
-                    ▼
-             inverter, over FDCAN1
+                    ▼ Validated Driver Request (T_total)
+    ┌────────────────────────────────────────────────────────┐
+    │     Electronic Differential & Torque Vectoring         │
+    │  (Bosch LWS Steering + Xsens IMU + DTI ERPM Telemetry) │
+    └────────────────────────────────────────────────────────┘
+             │                                      │
+             ▼                                      ▼
+    Left Inverter (DTI Node 1)             Right Inverter (DTI Node 2)
 ```
 
-Every limiter is a **cap**, never a gain — `torque = min(torque, cap)`. [`docs/derating.md`](docs/derating.md) explains all four and which one to suspect when the car feels down on power.
+Every limiter is a **cap**, never a gain — `torque = min(torque, cap)`. [`docs/derating.md`](docs/derating.md) explains all four caps and which one to suspect when the car feels down on power.
+
+---
+
+## Electronic Differential & Torque Vectoring (RWD)
+
+On this branch (`feature/electronic-differential`), the ECU implements an **Electronic Differential (Torque Vectoring)** on the rear axle for dual independent DTI inverters and F-MOT motors. It takes the rule-compliant validated driver torque demand ($T_{total}$) and splits/modulates it across the left and right rear wheels to optimize cornering agility, eliminate understeer, and ensure high-speed stability.
+
+### Control Modes & Failsafe Architecture
+
+1. **Passive Mode (`DIFF_MODE_PASSIVE`):**
+   - Symmetric 50/50 torque split ($T_{left} = T_{right} = T_{total} / 2$).
+   - Active at standstill ($v_x < 0.8\text{ m/s}$) or as a safe fallback if steering angle telemetry is lost.
+2. **Open-Loop Kinematic Mode (`DIFF_MODE_MINGO`):**
+   - Pure feedforward Ackermann steering geometry based on road wheel angle $\delta$ and vehicle speed $v_x$:
+     $$\Delta T = T_{base} \cdot K_{diff}(\delta, v_x) \cdot \left(\frac{w}{2L}\right) \cdot \tan(\delta)$$
+   - Features variable gain scheduling $K_{diff}(\delta, v_x) = K_{angle}(\delta) \cdot K_{speed}(v_x)$ across 3 angle zones (deadband $<2^\circ$, linear ramp $2^\circ-22^\circ$, saturation $>22^\circ$) and 6 speed ranges ($0-15$, $15-30$, $30-42$, $42-62$, $62-82$, $>82\text{ km/h}$).
+   - Includes **Virtual LSD** slip mitigation using rear-wheel ERPM telemetry to trim torque on any slipping wheel exceeding a 15% deviation threshold.
+   - Functions as the immediate glitch-free fallback whenever IMU telemetry times out.
+3. **Closed-Loop Dynamic Mode (`DIFF_MODE_PARTY`):**
+   - 2-DOF linear bicycle model generating target yaw rate:
+     $$r_{target,lin} = \left[\frac{v_x}{L + K_{us} v_x^2}\right] \delta$$
+   - Saturation by available road friction: $|r_{target}| \le \min\left(|r_{target,lin}|, \frac{\mu g}{v_x}\right)$.
+   - Dynamic lateral load transfer base allocation: normal load shifts from inner to outer wheel in cornering ($\Delta F_{z,rear} = \frac{m \cdot a_y \cdot h_{CG}}{w} K_{roll,rear}$), allocating more base torque to the heavily loaded outer tire.
+   - Anti-windup PID controller acting on yaw rate error $e_r = r_{target} - r_{actual}$ to produce corrective yaw moment $M_z$ and torque bias $\Delta T_{TV} = \frac{M_z \cdot r_w}{G \cdot w}$.
+   - Side-slip angle ($\beta$) observer ($\dot{\beta} = \frac{a_y}{v_x} - r_{actual}$) with emergency spin intervention: if $|\beta| > 8.5^\circ$, total torque is cut by 70% and stabilizing counter-yaw moment is commanded.
+
+### Process & Data Flow Diagram
+
+```mermaid
+flowchart TD
+    subgraph SENSORS ["Sensor & Communication Inputs"]
+        APPS["Pedal Sensors (APPS1 + APPS2)<br/>Plausibility & 100 ms Window (T.11.8.9)"]
+        LWS["Bosch Motorsport LWS (CAN 0x0C0)<br/>Steering Wheel Angle & Angular Speed"]
+        IMU["Xsens MTi IMU (CAN 0x201)<br/>Yaw Rate r & Lateral Accel a_y"]
+        DTI_FB["DTI Inverter Feedback (CAN 0x401 / 0x402)<br/>Packet 0x20: ERPM_L, ERPM_R, Vbus"]
+    end
+
+    subgraph DERATE ["Envelope & Authoritative Driver Torque"]
+        T_REQ["Driver Torque Request"]
+        CAPS["min(Cell V, Motor Temp, Pack Temp, EV 2.2.1 Power)"]
+        APPS --> T_REQ --> CAPS --> T_TOTAL["T_total (Validated Demand)"]
+    end
+
+    subgraph MONITOR ["Health & Liveness State Machine"]
+        TO_CHK["Timeout & Health Monitor<br/>IMU (50 ms), LWS (100 ms), DTI (100 ms)"]
+        DEBOUNCE["Mode Debounce Filter<br/>150 ms stable IMU before PartyMode"]
+        TO_CHK --> DEBOUNCE
+    end
+
+    LWS --> TO_CHK
+    IMU --> TO_CHK
+    DTI_FB --> TO_CHK
+
+    subgraph CONTROLLERS ["Torque Vectoring Controllers"]
+        subgraph MINGO ["MingoMode (Kinematic Open-Loop)"]
+            K_GAIN["Gain Table K_diff(delta, v_x)<br/>3 Angle Zones & 6 Speed Ranges"]
+            ACKERMANN["Ackermann Kinematic Split<br/>Delta_T = T_base * K_diff * (w/2L) * tan(delta)"]
+            V_LSD["Virtual LSD Slip Control<br/>Trims torque on spinning wheel"]
+            K_GAIN --> ACKERMANN
+            V_LSD --> ACKERMANN
+        end
+
+        subgraph PARTY ["PartyMode (Dynamic Closed-Loop)"]
+            BICYCLE["2-DOF Bicycle Model r_target<br/>Friction Saturated: mu * g / v_x"]
+            LOAD_XFER["Lateral Load Transfer Delta_F_z<br/>Normal load based split"]
+            PID["Anti-Windup Yaw Rate PID<br/>M_z -> Delta_T_TV"]
+            BETA["Side-Slip Angle Beta Observer<br/>Emergency Spin Cut (|beta| > 8.5 deg)"]
+            BICYCLE --> PID
+            LOAD_XFER --> PID
+            BETA --> PID
+        end
+
+        PASSIVE["Passive Mode<br/>50/50 Symmetric Split"]
+    end
+
+    DEBOUNCE -->|IMU Healthy & Debounced| PARTY
+    DEBOUNCE -->|IMU Timeout / Stale| MINGO
+    DEBOUNCE -->|LWS Sensor Fault| PASSIVE
+
+    subgraph ARBITRATION ["Arbitration & Actuator Envelopes"]
+        NET_PRESERVE["Net Torque Preservation Invariant<br/>T_left + T_right <= T_total"]
+        ACT_CLAMP["Motor Torque Clamp (<= 31.6 Nm)"]
+        SLEW["Asymmetric Slew-Rate Limiter<br/>Smooth tip-in / Rapid safety cut"]
+        NET_PRESERVE --> ACT_CLAMP --> SLEW
+    end
+
+    T_TOTAL --> ARBITRATION
+    MINGO --> ARBITRATION
+    PARTY --> ARBITRATION
+    PASSIVE --> ARBITRATION
+
+    subgraph CAN_OUT ["DTI Inverter CAN2 Transmit Stage"]
+        CMD_L["Left Inverter (Node 1)<br/>Packet 0x01: Set AC Current (int16 BE * 10)<br/>Packet 0x0C: Drive Enable"]
+        CMD_R["Right Inverter (Node 2)<br/>Packet 0x01: Set AC Current (int16 BE * 10)<br/>Packet 0x0C: Drive Enable"]
+    end
+
+    SLEW -->|I_left = T_left / Kt| CMD_L
+    SLEW -->|I_right = T_right / Kt| CMD_R
+```
+
+### Module Structure & Integration Reference
+
+- **[`differential_config.h`](Core/Inc/app/differential_config.h) & [`differential_config.c`](Core/Src/app/differential_config.c):** Single point of tuning for geometry ($W, L, h_{CG}$), PID gains, gain curves, limits, and CAN IDs.
+- **[`electronic_diff.h`](Core/Inc/app/electronic_diff.h) & [`electronic_diff.c`](Core/Src/app/electronic_diff.c):** Pure, deterministic C core module implementing the state machine, kinematics, bicycle model, load transfer, and arbitrator.
+- **[`electronic_diff_can.h`](Core/Inc/app/electronic_diff_can.h) & [`electronic_diff_can.c`](Core/Src/app/electronic_diff_can.c):** CAN encoding and decoding layer for Bosch LWS, Xsens IMU, and DTI inverters.
+- **[`ELECTRONIC_DIFF_INTEGRATION.md`](docs/ELECTRONIC_DIFF_INTEGRATION.md):** Complete step-by-step firmware integration and trackside tuning guide.
+
+---
 
 ### The three buses
 
 | Bus | Peer | Traffic |
 |---|---|---|
-| **FDCAN1** | Inverter (EPowerLabs W90 / EMC150) | torque command out, state and FOC telemetry in |
-| **FDCAN2** | AMS, pit tool, driverless uDV | the safety contracts — heartbeat, precharge, discharge interlock |
+| **FDCAN1** | Inverters (DTI Dual Inverter RWD / EMC) | Dual-motor torque & drive commands out, ERPM/Duty/Temp telemetry in |
+| **FDCAN2** | AMS, pit tool, driverless uDV, Bosch LWS, Xsens IMU | Safety contracts (heartbeat, precharge, discharge interlock), steering angle & vehicle dynamics IMU telemetry |
 | **FDCAN3** | Dashboard | TX only |
 
 All three at 500 kbit/s. The wire format is **code-first**: the `.def` files in `Core/Inc/can/messages/` are the source of truth, and [`docs/dbc/ecu.dbc`](docs/dbc/ecu.dbc) is generated from them by the DBC bot on every PR.
