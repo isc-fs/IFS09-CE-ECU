@@ -20,8 +20,11 @@ extern "C" {
 /**
  * @brief Mechanical and chassis parameters of the IFS-09 vehicle.
  */
+// Constants tagged COMMISSION are preliminary design targets carried from
+// IFS09 CAD / multibody simulations and MUST be confirmed on corner scales
+// and skidpad testing before running in high-power flight modes.
 typedef struct {
-    float wheelbase_m;               /**< Wheelbase L (distance between front and rear axle) [m] */
+    float wheelbase_m;               /**< Wheelbase L (front to rear axle) [m] */               /**< Wheelbase L (distance between front and rear axle) [m] */
     float track_width_rear_m;        /**< Rear axle track width w [m] */
     float cg_height_m;               /**< Center of gravity height h_CG [m] */
     float dist_cg_front_m;           /**< Longitudinal distance from CG to front axle a [m] */
@@ -36,6 +39,8 @@ typedef struct {
     float motor_max_torque_nm;       /**< Maximum peak torque per motor [Nm] (31.6 Nm for DTI F-MOT) */
     float cornering_stiff_front;     /**< Front axle cornering stiffness C_f [N/rad] */
     float cornering_stiff_rear;      /**< Rear axle cornering stiffness C_r [N/rad] */
+    /** Understeer gradient K_us [rad/(m/s^2)] = (m/L) * (b/C_f - a/C_r).
+     * Positive = understeer tendency (nose pushes wide). */
     float understeer_gradient;       /**< Understeer gradient K_us [rad/(m/s^2) or s^2/m^2] */
     float rear_roll_stiffness_ratio; /**< Fraction of lateral load transfer taken by rear axle K_roll,tras (0.0 to 1.0) */
     float road_friction_coeff;       /**< Estimated tire-road friction coefficient mu */

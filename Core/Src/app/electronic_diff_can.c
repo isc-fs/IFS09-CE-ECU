@@ -36,6 +36,10 @@ void electronic_diff_can_init(BoschLwsState* lws,
     if (inv_right) memset(inv_right, 0, sizeof(*inv_right));
 }
 
+// DTI CAN2 ADDRESSING (DTI Inverter CAN Manual v2.5, Section 2.4):
+// - Standard 11-bit IDs: Packet ID in bits 10:5 (shift >> 5), Node ID in bits 4:0 (mask 0x1F).
+// - Extended 29-bit IDs: Packet ID in bits 28:8 (shift >> 8), Node ID in bits 7:0 (mask 0xFF).
+// Motorola Big-Endian byte order throughout; all frames 8 bytes DLC.
 uint32_t electronic_diff_can_make_dti_id(const DiffConfig* cfg, uint8_t packet_id, uint8_t node_id) {
     if (!cfg) return 0;
     if (cfg->can.dti_use_extended_id) {
@@ -61,6 +65,9 @@ void electronic_diff_can_parse_dti_id(const DiffConfig* cfg,
     }
 }
 
+// PACKET 0x01: SET AC CURRENT (Manual Section 4.2 Table 10)
+// Signed 16-bit Big-Endian @ bytes 0-1, scaled by 10 (0.1 A_pk per LSB).
+// Positive current = forward drive (unlike legacy NX/EMC which was negated).
 void electronic_diff_can_build_dti_set_current(const DiffConfig* cfg,
                                                uint8_t node_id,
                                                float current_apk,

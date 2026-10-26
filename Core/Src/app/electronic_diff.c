@@ -141,7 +141,13 @@ void electronic_diff_step(DiffState* state,
     float t_total = in->total_torque_demand_nm;
     if (t_total < 0.0f) t_total = 0.0f;
 
-    /* 1. Steering angle calculation and safety check */
+    /* 1. Steering angle calculation and safety check.
+     *
+     * THE STEERING DROPOUT TRAP:
+     * Never freeze or hold the last valid steering angle on sensor timeout. If
+     * the sensor drops out mid-corner and we held the angle, the ECU would blast
+     * a 15 Nm torque-vectoring bias onto the subsequent straight! When LWS
+     * validity drops, fall back to PASSIVE 50/50 immediately. */
     if (!in->steering_angle_valid) {
         out->diag_flags |= DIFF_FLAG_STEER_TIMEOUT;
         state->mode = DIFF_MODE_PASSIVE;
@@ -152,7 +158,13 @@ void electronic_diff_step(DiffState* state,
         : 0.0f;
     out->road_wheel_angle_rad = road_wheel_angle;
 
-    /* 2. Operating Mode Decision & Fallback Logic */
+    /* 2. Operating Mode Decision & Fallback Logic.
+     *
+     * DEBOUNCED TRANSITIONS PREVENT CHATTER:
+     * When IMU packet timing jitters near the 50 ms timeout threshold, switching
+     * modes every tick would twitch the rear axle mid-corner. Fallback to MingoMode
+     * (open loop) is INSTANTANEOUS for safety; returning to PartyMode (closed loop)
+     * is DEBOUNCED for 150 ms of continuous, uninterrupted healthy packets. */
     if (in->steering_angle_valid) {
         if (in->imu_valid) {
             if (state->mode == DIFF_MODE_PARTY) {
@@ -170,7 +182,7 @@ void electronic_diff_step(DiffState* state,
                 }
             }
         } else {
-            /* IMU lost or stale -> instant fallback to mingomode */
+            /* IMU lost or stale -> instant glitch-free fallback to mingomode */
             state->imu_healthy_start_ms = 0;
             state->mode = DIFF_MODE_MINGO;
             out->diag_flags |= (DIFF_FLAG_IMU_TIMEOUT | DIFF_FLAG_FALLBACK_ACTIVE);
@@ -190,20 +202,26 @@ void electronic_diff_step(DiffState* state,
         t_right_raw = t_base;
         state->pid_integral_nm = 0.0f;
     } else if (state->mode == DIFF_MODE_MINGO) {
-        /* Mode 1: Open-loop kinematic Ackermann feedforward */
+        /* Mode 1: Open-loop kinematic Ackermann feedforward.
+         *
+         * KINEMATIC SPLIT:
+         * In a turn of radius R = L / tan(delta), the inside wheel travels an arc
+         * of (R - w/2) while the outside travels (R + w/2).
+         * Transferring Delta_T = T_base * K_diff * (w / 2L) * tan(delta) from inside
+         * to outside creates an assist yaw moment proportional to steering input.
+         * Sign convention: delta > 0 (left turn) -> Delta_T > 0 -> subtract from left
+         * (inside), add to right (outside). Total torque is preserved exactly. */
         state->pid_integral_nm = 0.0f;
         const float t_base = t_total * 0.5f;
 
         const float k_diff = electronic_diff_calc_k_diff(config, road_wheel_angle, in->vehicle_speed_mps);
-        /* Ackermann Differential Torque: Delta_T = T_base * K_diff * (w / 2L) * tan(delta) */
         const float tan_delta = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
         float delta_t = t_base * k_diff * (config->vehicle.track_width_rear_m / (2.0f * config->vehicle.wheelbase_m)) * tan_delta;
 
-        /* Clamp delta_t to maximum differential torque limit */
+        /* Hard clamp to maximum allowable mechanical bias (preventing inverter overcurrent) */
         delta_t = clampf(delta_t, -config->limits.max_delta_torque_nm, config->limits.max_delta_torque_nm);
         out->delta_torque_nm = delta_t;
 
-        /* Delta_T > 0 in left turn -> subtract from left (inside), add to right (outside) */
         t_left_raw  = t_base - delta_t;
         t_right_raw = t_base + delta_t;
 
@@ -232,7 +250,12 @@ void electronic_diff_step(DiffState* state,
             }
         }
     } else if (state->mode == DIFF_MODE_PARTY) {
-        /* Mode 2: Closed-loop dynamic yaw rate control */
+        /* Mode 2: Closed-loop dynamic yaw rate feedback (Full Torque Vectoring).
+         *
+         * 2-DOF BICYCLE TARGET WITH TIRE SATURATION:
+         * Predicts steady-state yaw rate: r = [v_x / (L + K_us*v_x^2)] * delta.
+         * Road friction ceiling: road tires cannot support yaw rate past mu*g / v_x.
+         * Capping target prevents commanding impossible yaw acceleration. */
         bool yaw_saturated = false;
         const float r_target = electronic_diff_calc_target_yaw_rate(config, road_wheel_angle, in->vehicle_speed_mps, &yaw_saturated);
         out->target_yaw_rate_rads = r_target;
@@ -240,7 +263,13 @@ void electronic_diff_step(DiffState* state,
             out->diag_flags |= DIFF_FLAG_YAW_SATURATED;
         }
 
-        /* 3.1 Lateral load transfer (Delta F_z) */
+        /* 3.1 Lateral load transfer (Delta F_z)
+         *
+         * MAXIMIZING GRIP BEFORE TORQUE VECTORING:
+         * Centrifugal acceleration a_y transfers weight from inner to outer tire.
+         * Since peak longitudinal traction is F_x,max = mu * F_z, distributing
+         * baseline torque in proportion to normal load (F_z,left vs F_z,right)
+         * puts the work on the tire that actually has grip, delaying wheel spin. */
         const float fz0_rear = config->vehicle.total_mass_kg * GRAVITY_MPS2 *
                                (config->vehicle.dist_cg_front_m / config->vehicle.wheelbase_m);
         const float delta_fz = (config->vehicle.total_mass_kg * in->lateral_accel_mps2 * config->vehicle.cg_height_m /

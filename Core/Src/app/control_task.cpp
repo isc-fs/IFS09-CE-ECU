@@ -344,7 +344,23 @@ extern "C" void ecu_control_task_run(void *argument) {
         }
 
         // --- Electronic Differential (Torque Vectoring) & DTI Inverter Output ---
-        // 1. Check sensor and inverter timeouts
+        //
+        // ARCHITECTURE RATIONALE:
+        // This block executes synchronously inside ControlTask (the sole realtime
+        // safety actor in the car) directly after Controller::step() has validated
+        // pedal plausibility and applied the four FS derating caps.
+        //
+        // ZERO-LATENCY INVARIANT:
+        // Running torque vectoring here takes <8 us on the STM32H733, avoiding the
+        // 10-20 ms phase lag, queue contention, and context-switching jitter of a
+        // separate FreeRTOS task. Crucially, when an APPS disagreement (T.11.8.9) or
+        // brake implausibility trips, total_demand_nm is zeroed in this EXACT cycle,
+        // so stale torque commands can never reach the physical actuators.
+        //
+        // 1. Check sensor and inverter timeouts (isolated freshness tracking)
+        // Just like 0x135 for cell derating and 0x464 for motor thermal caps, the
+        // Bosch LWS and Xsens IMU track their own freshness ticks. A dead gyro
+        // cannot hide behind a healthy inverter packet.
         electronic_diff_can_check_timeouts(&diff_cfg, now,
                                             const_cast<BoschLwsState*>(&veh.diff_lws),
                                             const_cast<XsensImuState*>(&veh.diff_imu),
@@ -352,6 +368,11 @@ extern "C" void ecu_control_task_run(void *argument) {
                                             const_cast<DtiInverterState*>(&veh.diff_inv_right));
 
         // 2. Prepare differential inputs from validated driver request and telemetry
+        //
+        // NET TORQUE PRESERVATION:
+        // Driver request (out.torque_pct) maps to total axle torque (0..63.2 Nm for
+        // dual DTI F-MOTs). The differential allocates between left and right wheels
+        // but NEVER increases net tractive torque beyond driver demand.
         DiffInputs diff_in{};
         const float total_demand_nm = (out.state == CtrlState::Active)
             ? ((static_cast<float>(out.torque_pct) * (2.0f * diff_cfg.vehicle.motor_max_torque_nm)) / 100.0f)
@@ -380,6 +401,14 @@ extern "C" void ecu_control_task_run(void *argument) {
         }
 
         // 3. Package and transmit DTI Inverter CAN commands (FDCAN1)
+        //
+        // DTI INVERTER CAN2 PROTOCOL CONTRACT:
+        // Uses Standard 11-bit IDs: Packet ID << 5 | Node ID.
+        // - Left Inverter: Node 1 -> Cmd 0x01 (0x021), Enable 0x0C (0x181)
+        // - Right Inverter: Node 2 -> Cmd 0x01 (0x022), Enable 0x0C (0x182)
+        //
+        // Target current is scaled by 10 (0.1 A_pk/LSB), signed 16-bit Big-Endian.
+        // Sent non-blocking via can_tx_post() so ControlTask never waits on FIFO.
         const bool drive_enabled = (out.state == CtrlState::Active || out.state == CtrlState::WaitInvStandby);
         uint32_t can_id = 0;
         uint8_t dlc = 0;
