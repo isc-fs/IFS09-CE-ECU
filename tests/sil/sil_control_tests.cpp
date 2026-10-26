@@ -30,7 +30,11 @@
 #include "app/vehicle_service.hpp" // inverter/AMS RX decoders (rpm / temps / state)
 #include "app/radio_snapshot.hpp"  // v2 fragmented-snapshot radio serializer
 #include "app/gps_nmea.hpp"        // MTK3339 NMEA parser (USART10 GPS)
-#include "app/gps_tx.hpp"          // 0x508/0x509 GPS frame builders
+#include "app/gps_tx.hpp"
+#include "app/differential_config.h"
+#include "app/electronic_diff.h"
+#include "app/electronic_diff_can.h"
+#include <cmath>          // 0x508/0x509 GPS frame builders
 
 using namespace ecu;
 using namespace ecu::config;
@@ -3092,6 +3096,194 @@ static void test_gps() {
 
 // ----- dispatch -------------------------------------------------------------
 
+static void test_electronic_differential() {
+    std::printf("--- test_electronic_differential ---\n");
+    DiffConfig cfg = diff_config_get_default();
+
+    // 1. Vehicle parameters sanity
+    CHECK(cfg.vehicle.wheelbase_m > 1.5f && cfg.vehicle.wheelbase_m < 1.6f, "Wheelbase L around 1.53m");
+    CHECK(cfg.vehicle.track_width_rear_m > 1.1f && cfg.vehicle.track_width_rear_m < 1.3f, "Track width w around 1.20m");
+    CHECK(cfg.vehicle.total_mass_kg > 200.0f && cfg.vehicle.total_mass_kg < 300.0f, "Total mass around 260kg");
+    CHECK(cfg.vehicle.motor_max_torque_nm > 30.0f && cfg.vehicle.motor_max_torque_nm < 35.0f, "DTI F-MOT max torque 31.6Nm");
+    CHECK(cfg.vehicle.kt_peak_nm_per_a > 0.6f && cfg.vehicle.kt_peak_nm_per_a < 0.8f, "Kt around 0.696");
+
+    // 2. Variable gain K_diff(delta, v_x)
+    // Zone 1: Deadband (|delta| < 2 deg = 0.0349 rad)
+    float k_straight = electronic_diff_calc_k_diff(&cfg, 0.010f, 15.0f);
+    CHECK(k_straight == 0.0f, "Zone 1 deadband K_diff == 0");
+
+    // Zone 2: Linear ramp (2 deg to 22 deg = 0.384 rad)
+    float k_ramp_mid = electronic_diff_calc_k_diff(&cfg, 0.209f, 15.0f);
+    CHECK(k_ramp_mid > 0.0f && k_ramp_mid < 1.0f, "Zone 2 linear ramp intermediate gain");
+
+    // Zone 3: Saturation (> 22 deg)
+    float k_sat = electronic_diff_calc_k_diff(&cfg, 0.50f, 15.0f);
+    CHECK(k_sat > 0.8f && k_sat <= 1.0f, "Zone 3 saturation gain");
+
+    // Speed curve checking: test exactly at 20 deg (linear zone) where k_angle > 0.9
+    float k_spd_paddock = electronic_diff_calc_k_diff(&cfg, 0.349f, 2.0f); // ~7 km/h
+    CHECK(k_spd_paddock >= 0.0f && k_spd_paddock < 0.2f, "Paddock speed K_diff < 0.2");
+
+    // Breakpoint 4 is 62 km/h (17.22 m/s) where k_speed is exactly 1.0
+    float k_spd_slalom = electronic_diff_calc_k_diff(&cfg, 0.349f, 17.22f); // ~62 km/h
+    CHECK(k_spd_slalom > 0.85f && k_spd_slalom <= 1.0f, "Slalom peak speed K_diff near 1.0");
+
+    // Very high speed > 100 km/h (> 27.78 m/s) where k_speed is attenuated to 0.15
+    float k_spd_straight = electronic_diff_calc_k_diff(&cfg, 0.349f, 30.0f);
+    CHECK(k_spd_straight > 0.1f && k_spd_straight <= 0.2f, "High-speed straight K_diff attenuated");
+
+    // 3. Bicycle Model Target Yaw Rate & Friction Saturation
+    bool sat = false;
+    float r_target_lin = electronic_diff_calc_target_yaw_rate(&cfg, 0.10f, 10.0f, &sat);
+    CHECK(r_target_lin > 0.0f, "Turn left -> positive target yaw rate");
+    CHECK(!sat, "Moderate speed and angle not friction saturated");
+
+    float r_target_sat = electronic_diff_calc_target_yaw_rate(&cfg, 0.50f, 25.0f, &sat);
+    CHECK(sat, "High speed sharp turn triggers friction saturation");
+    float expected_r_fric = (cfg.vehicle.road_friction_coeff * 9.80665f) / 25.0f;
+    CHECK(std::abs(r_target_sat - expected_r_fric) < 0.01f, "Yaw rate clamped to friction limit");
+
+    // 4. Open-Loop Mode (mingomode) Step Evaluation
+    DiffState state;
+    electronic_diff_init(&state);
+
+    DiffInputs in{};
+    in.dt_s = 0.010f;
+    in.now_ms = 1000;
+    in.total_torque_demand_nm = 40.0f;
+    in.vehicle_speed_mps = 12.0f;
+    in.steering_angle_valid = true;
+    in.imu_valid = false; // IMU missing -> triggers mingomode
+    in.steering_wheel_angle_rad = 0.0f;
+
+    DiffOutputs out{};
+    // Step through 20 cycles (200 ms) so slew-rate limiter ramps from 0 to full demand
+    for (int i = 0; i < 25; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_MINGO, "IMU missing -> operates in MingoMode");
+    CHECK(std::abs(out.torque_left_nm - 20.0f) < 0.1f, "Straight line -> 50/50 symmetric 20 Nm");
+    CHECK(std::abs(out.torque_right_nm - 20.0f) < 0.1f, "Straight line -> 50/50 symmetric 20 Nm");
+    CHECK(std::abs((out.torque_left_nm + out.torque_right_nm) - 40.0f) < 0.01f, "Net torque preserved 40 Nm");
+
+    // Left turn in mingomode: steering wheel angle = +45 deg (0.785 rad)
+    in.steering_wheel_angle_rad = 0.785f;
+    for (int i = 0; i < 30; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.torque_left_nm < 20.0f, "Left turn -> Inside (left) torque reduced");
+    CHECK(out.torque_right_nm > 20.0f, "Left turn -> Outside (right) torque increased");
+    CHECK(out.torque_left_nm + out.torque_right_nm <= 40.01f, "Invariant: sum of torques <= total driver demand");
+
+    // 5. Virtual LSD in mingomode: simulated outside wheel spin
+    in.wheel_speeds_valid = true;
+    in.left_wheel_speed_rads = 50.0f;
+    in.right_wheel_speed_rads = 85.0f;
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0, "Virtual LSD active on excessive wheel slip");
+    CHECK(out.torque_right_nm < 20.0f, "Virtual LSD trimmed torque on spinning right wheel");
+
+    // 6. Closed-Loop Mode (partymode) with IMU
+    electronic_diff_init(&state);
+    in.imu_valid = true;
+    in.wheel_speeds_valid = false;
+    in.steering_wheel_angle_rad = 0.40f;
+    in.measured_yaw_rate_rads = 0.10f;
+    in.lateral_accel_mps2 = 4.0f;
+
+    in.now_ms = 2000;
+    // Step through debounce window (> 150 ms) to enter partymode and let slew rate ramp
+    for (int i = 0; i < 30; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_PARTY, "Promoted to PartyMode after stable IMU reception");
+    CHECK(out.yaw_rate_error_rads > 0.0f, "Understeer detected (e_r > 0)");
+    CHECK(out.yaw_moment_nm > 0.0f, "Positive corrective yaw moment to turn car into corner");
+    CHECK(out.torque_right_nm > out.torque_left_nm, "More torque to outside wheel to eliminate understeer");
+
+    // 7. Side-slip Emergency Protection
+    state.side_slip_beta_rad = 0.20f;
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK((out.diag_flags & DIFF_FLAG_EMERGENCY_SPIN) != 0, "Emergency spin stabilization triggered");
+    CHECK(out.torque_left_nm + out.torque_right_nm < 25.0f, "Emergency spin cuts overall tractive power");
+
+    // 8. Failsafe transition: IMU timeout mid-corner
+    in.imu_valid = false;
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK(out.mode == DIFF_MODE_MINGO, "Instant fallback to MingoMode on IMU loss");
+    CHECK((out.diag_flags & DIFF_FLAG_IMU_TIMEOUT) != 0, "IMU timeout flag set");
+
+    // Steering sensor failure -> passive 50/50
+    in.steering_angle_valid = false;
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK(out.mode == DIFF_MODE_PASSIVE, "Steering fault drops to Passive 50/50 mode");
+    CHECK((out.diag_flags & DIFF_FLAG_STEER_TIMEOUT) != 0, "Steer timeout flag set");
+
+    // 9. CAN Interface Layer: Bosch LWS & Xsens IMU & DTI
+    BoschLwsState lws{};
+    XsensImuState imu{};
+    DtiInverterState inv_l{}, inv_r{};
+    electronic_diff_can_init(&lws, &imu, &inv_l, &inv_r);
+
+    // Bosch LWS frame: ID 0x0C0, angle +15.5 deg (155 = 0x009B), speed 45 deg/s (0x002D)
+    uint8_t lws_frame[8] = { 0x00, 0x9B, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x00 };
+    bool rx_ok = electronic_diff_can_process_rx(&cfg, 0x0C0, false, lws_frame, 8, 3000, &lws, &imu, &inv_l, &inv_r);
+    CHECK(rx_ok, "Bosch LWS frame processed");
+    CHECK(std::abs(lws.steering_angle_deg - 15.5f) < 0.05f, "LWS angle decoded accurately");
+    CHECK(std::abs(lws.steering_speed_deg_s - 45.0f) < 0.1f, "LWS speed decoded accurately");
+    CHECK(lws.valid, "LWS marked valid");
+
+    // Negative angle: -20.0 deg (-200 = 0xFF38)
+    uint8_t lws_neg[8] = { 0xFF, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    electronic_diff_can_process_rx(&cfg, 0x0C0, false, lws_neg, 8, 3010, &lws, &imu, &inv_l, &inv_r);
+    CHECK(std::abs(lws.steering_angle_deg - (-20.0f)) < 0.05f, "LWS negative angle decoded accurately");
+
+    // Xsens IMU frame: ID 0x201, yaw rate +0.350 rad/s (350 = 0x015E), a_y -2.50 m/s^2 (-250 = 0xFF06)
+    uint8_t imu_frame[8] = { 0x01, 0x5E, 0xFF, 0x06, 0x00, 0x00, 0x00, 0x00 };
+    rx_ok = electronic_diff_can_process_rx(&cfg, 0x201, false, imu_frame, 8, 3020, &lws, &imu, &inv_l, &inv_r);
+    CHECK(rx_ok, "Xsens IMU frame processed");
+    CHECK(std::abs(imu.yaw_rate_rads - 0.350f) < 0.005f, "IMU yaw rate decoded accurately");
+    CHECK(std::abs(imu.lateral_accel_mps2 - (-2.50f)) < 0.01f, "IMU lateral accel decoded accurately");
+    CHECK(imu.valid, "IMU marked valid");
+
+    // DTI Inverter CAN command packaging (Packet 0x01 Set AC Current)
+    uint32_t cmd_can_id = 0;
+    uint8_t cmd_data[8] = {};
+    uint8_t cmd_dlc = 0;
+    electronic_diff_can_build_dti_set_current(&cfg, 1, 25.4f, &cmd_can_id, cmd_data, &cmd_dlc);
+    uint32_t expected_id = (0x01u << 5) | 1u;
+    CHECK(cmd_can_id == expected_id, "DTI Standard 11-bit command CAN ID matches 0x021");
+    CHECK(cmd_dlc == 8, "DTI command DLC == 8");
+    CHECK(cmd_data[0] == 0x00 && cmd_data[1] == 0xFE, "DTI AC current scaled *10 big-endian (254)");
+
+    // DTI Packet 0x0C Drive Enable command
+    electronic_diff_can_build_dti_drive_enable(&cfg, 2, true, &cmd_can_id, cmd_data, &cmd_dlc);
+    CHECK(cmd_can_id == ((0x0Cu << 5) | 2u), "DTI Drive Enable CAN ID matches 0x182");
+    CHECK(cmd_data[0] == 0x01, "Drive enable byte == 1");
+
+    // DTI Packet 0x20 ERPM telemetry parsing
+    uint32_t fb_id = (0x20u << 5) | 1u;
+    uint8_t fb_data[8] = { 0x00, 0x00, 0x24, 0x5E, 0x00, 0x71, 0x01, 0x86 };
+    rx_ok = electronic_diff_can_process_rx(&cfg, fb_id, false, fb_data, 8, 3030, &lws, &imu, &inv_l, &inv_r);
+    CHECK(rx_ok, "DTI telemetry frame 0x20 processed");
+    CHECK(inv_l.erpm == 9310, "ERPM decoded matches manual example 9310");
+    CHECK(std::abs(inv_l.duty_cycle_pct - 11.3f) < 0.1f, "Duty cycle matches 11.3%");
+    CHECK(std::abs(inv_l.input_voltage_v - 390.0f) < 0.1f, "Input voltage matches 390 V");
+
+    // Timeout checking: advance clock past timeout thresholds
+    electronic_diff_can_check_timeouts(&cfg, 4000, &lws, &imu, &inv_l, &inv_r);
+    CHECK(!lws.valid, "LWS timed out past steer_timeout_ms");
+    CHECK(!imu.valid, "IMU timed out past imu_timeout_ms");
+    CHECK(!inv_l.valid, "Inverter timed out past inverter_timeout_ms");
+}
+
 static void run_all() {
     test_apps_pct();
     test_cold_start();
@@ -3132,6 +3324,7 @@ static void run_all() {
     test_udv_tx();
     test_radio_snapshot();
     test_gps();
+    test_electronic_differential();
 }
 
 int main(int argc, char** argv) {
@@ -3178,6 +3371,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(m, "--test-dv-mode"))            test_dv_mode();
     else if (!std::strcmp(m, "--test-radio"))              test_radio_snapshot();
     else if (!std::strcmp(m, "--test-gps"))                test_gps();
+    else if (!std::strcmp(m, "--test-diff"))               test_electronic_differential();
     else                                                   run_all();  // --test-integration / --test-all / default
 
     std::printf("=== %d checks, %d failed ===\n", g_checks, g_fails);
