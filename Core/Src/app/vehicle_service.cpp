@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: proprietary
 
 #include "app/vehicle_service.hpp"
+#include "app/differential_config.h"
+#include "app/electronic_diff_can.h"
 
 #include "app/ecu_config.hpp"
 
@@ -135,6 +137,21 @@ bool VehicleService::is_fresh(std::uint32_t now, std::uint32_t last,
 // ---- single-writer update --------------------------------------------------
 
 bool VehicleService::update_from_frame(const CanFrame& f) noexcept {
+    // --- Electronic Differential CAN Frames (Bosch LWS, Xsens IMU, DTI Telemetry) ---
+    static const DiffConfig diff_cfg = diff_config_get_default();
+    if (electronic_diff_can_process_rx(&diff_cfg, f.id, false, f.data, f.dlc, f.timestamp_ms,
+                                       &state_.diff_lws, &state_.diff_imu,
+                                       &state_.diff_inv_left, &state_.diff_inv_right)) {
+        if (state_.diff_inv_left.valid) {
+            state_.last_inv_tick = f.timestamp_ms;
+            state_.inv_dc_bus_V = static_cast<std::uint16_t>(state_.diff_inv_left.input_voltage_v);
+            state_.inv_rpm = state_.diff_inv_left.erpm;
+            state_.last_vconfig_tick = f.timestamp_ms;
+            state_.last_inv_s4_tick = f.timestamp_ms;
+        }
+        return true;
+    }
+
     // --- inverter bus (FDCAN1) ---
     if (f.bus == static_cast<std::uint8_t>(CanBus::Inv)) {
         if (f.id == config::InvRxStateId) {                 // 0x461

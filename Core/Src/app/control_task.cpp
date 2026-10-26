@@ -22,6 +22,9 @@
 #include "app/pit_diag.hpp"
 #include "app/udv_tx.hpp"
 #include "app/vehicle_service.hpp"
+#include "app/differential_config.h"
+#include "app/electronic_diff.h"
+#include "app/electronic_diff_can.h"
 #include "app/watchdog.hpp"
 
 #include "can/can_codecs.hpp"
@@ -38,6 +41,9 @@ extern "C" void ecu_control_task_run(void *argument) {
     Controller ctrl;
     Discharge  discharge;
     IoSignals  io;
+    DiffState  diff_state;
+    electronic_diff_init(&diff_state);
+    static const DiffConfig diff_cfg = diff_config_get_default();
     // The ACTIVE pedal calibration, loaded ONCE at task start from the
     // bootloader NVM sector. load_cal_from_nvm never fails: absent,
     // torn, unknown-version or invalid records all return the compile-time
@@ -337,34 +343,81 @@ extern "C" void ecu_control_task_run(void *argument) {
             can_tx_post(UdvTx::build_r2d_confirm(out.dv_mode));
         }
 
-        // --- inverter setpoints (FDCAN1), EVERY cycle: PLAIN 0x360 mode + 0x362
-        //     torque (bytes 0-1 = 0, no E2E -- byte-for-byte as the IFS07 VCU, which
-        //     blasted these continuously regardless of HV). Off pre-R2D, Ready at
-        //     WaitInvStandby, TorqueEnable in Active. ---
-        const CanFrame sp_mode = Inverter::build_setpoint_mode(out.inv_mode);
-        const CanFrame sp_tq   = Inverter::build_setpoint_torque(out.torque_pct);
-        can_tx_post(sp_mode);
-        // Fault-recovery burst: the reset word alone does not clear a latched
-        // inverter fault -- the follow-up Off(0x01) does (manual 9.3, and the
-        // IFS07 VCU that recovered without a power cycle sent the same
-        // sequence). Non-empty ONLY while inv_state is 10/11, so the healthy
-        // path still emits exactly one 0x360 per cycle.
-        // Flt_Clear rides the LAST follow word only -> the bit pulses low-low-high
-        // each cycle, so an edge-triggered clear sees a fresh rising edge at 100 Hz
-        // instead of one stuck-high level.
-        for (uint8_t i = 0; i < out.inv_mode_follow_n; ++i) {
-            const bool last = (i + 1u == out.inv_mode_follow_n);
-            can_tx_post(Inverter::build_setpoint_mode(out.inv_mode_follow[i],
-                                                      last && out.inv_flt_clear));
+        // --- Electronic Differential (Torque Vectoring) & DTI Inverter Output ---
+        // 1. Check sensor and inverter timeouts
+        electronic_diff_can_check_timeouts(&diff_cfg, now,
+                                            const_cast<BoschLwsState*>(&veh.diff_lws),
+                                            const_cast<XsensImuState*>(&veh.diff_imu),
+                                            const_cast<DtiInverterState*>(&veh.diff_inv_left),
+                                            const_cast<DtiInverterState*>(&veh.diff_inv_right));
+
+        // 2. Prepare differential inputs from validated driver request and telemetry
+        DiffInputs diff_in{};
+        const float total_demand_nm = (out.state == CtrlState::Active)
+            ? ((static_cast<float>(out.torque_pct) * (2.0f * diff_cfg.vehicle.motor_max_torque_nm)) / 100.0f)
+            : 0.0f;
+        diff_in.total_torque_demand_nm   = total_demand_nm;
+        diff_in.steering_wheel_angle_rad = veh.diff_lws.steering_angle_rad;
+        diff_in.steering_angle_valid     = veh.diff_lws.valid;
+        diff_in.left_wheel_speed_rads    = veh.diff_inv_left.wheel_speed_rads;
+        diff_in.right_wheel_speed_rads   = veh.diff_inv_right.wheel_speed_rads;
+        diff_in.wheel_speeds_valid       = veh.diff_inv_left.valid && veh.diff_inv_right.valid;
+        diff_in.vehicle_speed_mps        = (diff_in.wheel_speeds_valid)
+            ? (0.5f * (diff_in.left_wheel_speed_rads + diff_in.right_wheel_speed_rads) * diff_cfg.vehicle.wheel_radius_m)
+            : 0.0f;
+        diff_in.measured_yaw_rate_rads   = veh.diff_imu.yaw_rate_rads;
+        diff_in.lateral_accel_mps2       = veh.diff_imu.lateral_accel_mps2;
+        diff_in.imu_valid                = veh.diff_imu.valid;
+        diff_in.max_motor_torque_limit_nm= diff_cfg.vehicle.motor_max_torque_nm;
+        diff_in.dt_s                     = 0.010f;
+        diff_in.now_ms                   = now;
+
+        DiffOutputs diff_out{};
+        if (out.state == CtrlState::Active) {
+            electronic_diff_step(&diff_state, &diff_cfg, &diff_in, &diff_out);
+        } else {
+            electronic_diff_init(&diff_state);
         }
-        can_tx_post(sp_tq);
-#if defined(ECU_DEBUG_INV_BRIDGE)
-        // DEBUG: mirror our OWN setpoints onto FDCAN2 (0x560/0x562). NEVER flight.
-        {
-            CanFrame d = sp_mode; d.bus = static_cast<uint8_t>(CanBus::Acu); d.id = 0x560u; can_tx_post(d);
-            CanFrame e = sp_tq;   e.bus = static_cast<uint8_t>(CanBus::Acu); e.id = 0x562u; can_tx_post(e);
-        }
-#endif
+
+        // 3. Package and transmit DTI Inverter CAN commands (FDCAN1)
+        const bool drive_enabled = (out.state == CtrlState::Active || out.state == CtrlState::WaitInvStandby);
+        uint32_t can_id = 0;
+        uint8_t dlc = 0;
+        uint8_t data[8] = {};
+
+        // Drive Enable frames (Packet 0x0C)
+        electronic_diff_can_build_dti_drive_enable(&diff_cfg, diff_cfg.can.dti_left_node_id, drive_enabled, &can_id, data, &dlc);
+        CanFrame f_en_l{};
+        f_en_l.bus = static_cast<uint8_t>(CanBus::Inv);
+        f_en_l.id  = can_id;
+        f_en_l.dlc = dlc;
+        for (unsigned i = 0; i < dlc; ++i) f_en_l.data[i] = data[i];
+        can_tx_post(f_en_l);
+
+        electronic_diff_can_build_dti_drive_enable(&diff_cfg, diff_cfg.can.dti_right_node_id, drive_enabled, &can_id, data, &dlc);
+        CanFrame f_en_r{};
+        f_en_r.bus = static_cast<uint8_t>(CanBus::Inv);
+        f_en_r.id  = can_id;
+        f_en_r.dlc = dlc;
+        for (unsigned i = 0; i < dlc; ++i) f_en_r.data[i] = data[i];
+        can_tx_post(f_en_r);
+
+        // Set AC Current frames (Packet 0x01)
+        electronic_diff_can_build_dti_set_current(&diff_cfg, diff_cfg.can.dti_left_node_id, diff_out.current_left_apk, &can_id, data, &dlc);
+        CanFrame f_cur_l{};
+        f_cur_l.bus = static_cast<uint8_t>(CanBus::Inv);
+        f_cur_l.id  = can_id;
+        f_cur_l.dlc = dlc;
+        for (unsigned i = 0; i < dlc; ++i) f_cur_l.data[i] = data[i];
+        can_tx_post(f_cur_l);
+
+        electronic_diff_can_build_dti_set_current(&diff_cfg, diff_cfg.can.dti_right_node_id, diff_out.current_right_apk, &can_id, data, &dlc);
+        CanFrame f_cur_r{};
+        f_cur_r.bus = static_cast<uint8_t>(CanBus::Inv);
+        f_cur_r.id  = can_id;
+        f_cur_r.dlc = dlc;
+        for (unsigned i = 0; i < dlc; ++i) f_cur_r.data[i] = data[i];
+        can_tx_post(f_cur_r);
 
         // --- outputs: RTDS + status LEDs ---
         HAL_GPIO_WritePin(RTDS_GPIO_Port, RTDS_Pin,
