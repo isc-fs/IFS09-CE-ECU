@@ -259,7 +259,7 @@ On this branch (`feature/electronic-differential`), the ECU implements an **Elec
 flowchart TD
     subgraph SENSORS ["Sensor & Communication Inputs"]
         APPS["Pedal Sensors (APPS1 + APPS2)<br/>Plausibility & 100 ms Window (T.11.8.9)"]
-        LWS["Bosch Motorsport LWS (CAN 0x0C0)<br/>Steering Wheel Angle & Angular Speed"]
+        LWS["Bosch Motorsport LWS (CAN 0x2B0)<br/>Steering Wheel Angle & Angular Speed"]
         IMU["Xsens MTi IMU (CAN 0x201)<br/>Yaw Rate r & Lateral Accel a_y"]
         DTI_FB["DTI Inverter Feedback (CAN 0x401 / 0x402)<br/>Packet 0x20: ERPM_L, ERPM_R, Vbus"]
     end

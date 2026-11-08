@@ -3245,6 +3245,20 @@ static void test_electronic_differential() {
     electronic_diff_can_process_rx(&cfg, 0x0C0, false, lws_neg, 8, 3010, &lws, &imu, &inv_l, &inv_r);
     CHECK(std::abs(lws.steering_angle_deg - (-20.0f)) < 0.05f, "LWS negative angle decoded accurately");
 
+    // Bosch Motorsport LWS standard frame: ID 0x2B0, Little-Endian (Intel), 0.1 deg/LSB, status truth table
+    // +15.5 deg (155 = 0x009B -> LE: [0x9B, 0x00]), speed 40 deg/s (10 * 4 = 40 -> [0x0A]), status 0x07 (TRIM|CAL|OK)
+    uint8_t lws_std[8] = { 0x9B, 0x00, 0x0A, 0x07, 0x00, 0x00, 0x00, 0x00 };
+    rx_ok = electronic_diff_can_process_rx(&cfg, 0x2B0, false, lws_std, 8, 3015, &lws, &imu, &inv_l, &inv_r);
+    CHECK(rx_ok, "Bosch LWS 0x2B0 standard frame processed");
+    CHECK(std::abs(lws.steering_angle_deg - 15.5f) < 0.05f, "LWS 0x2B0 angle decoded accurately (LE)");
+    CHECK(std::abs(lws.steering_speed_deg_s - 40.0f) < 0.1f, "LWS 0x2B0 speed decoded accurately (*4)");
+    CHECK(lws.valid, "LWS 0x2B0 valid with status 0x07");
+
+    // Bosch Motorsport LWS uncalibrated state: CAL=0 (status 0x05) and 0x7FFF
+    uint8_t lws_uncal[8] = { 0xFF, 0x7F, 0x0A, 0x05, 0x00, 0x00, 0x00, 0x00 };
+    electronic_diff_can_process_rx(&cfg, 0x2B0, false, lws_uncal, 8, 3018, &lws, &imu, &inv_l, &inv_r);
+    CHECK(!lws.valid, "LWS 0x2B0 marked invalid when CAL=0 and angle 0x7FFF");
+
     // Xsens IMU frame: ID 0x201, yaw rate +0.350 rad/s (350 = 0x015E), a_y -2.50 m/s^2 (-250 = 0xFF06)
     uint8_t imu_frame[8] = { 0x01, 0x5E, 0xFF, 0x06, 0x00, 0x00, 0x00, 0x00 };
     rx_ok = electronic_diff_can_process_rx(&cfg, 0x201, false, imu_frame, 8, 3020, &lws, &imu, &inv_l, &inv_r);

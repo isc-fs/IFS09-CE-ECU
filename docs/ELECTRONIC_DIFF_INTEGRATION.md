@@ -32,7 +32,7 @@ can_rx_queue
      ▼
 CanRxTask (AboveNormal Priority)
      │
-     ├─► Bosch LWS (0x0C0) ──► electronic_diff_can_process_rx() ──► VehicleService / DiffState
+     ├─► Bosch LWS (0x2B0) ──► electronic_diff_can_process_rx() ──► VehicleService / DiffState
      ├─► Xsens IMU (0x201) ──► electronic_diff_can_process_rx() ──► VehicleService / DiffState
      └─► DTI FB (0x401/402)──► electronic_diff_can_process_rx() ──► VehicleService / DiffState
 

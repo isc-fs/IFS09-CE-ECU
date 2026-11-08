@@ -101,7 +101,7 @@ typedef struct {
  */
 typedef struct {
     /* Bosch Motorsport LWS Sensor */
-    uint32_t lws_can_id;             /**< Bosch LWS CAN identifier (Standard 11-bit) */
+    uint32_t lws_can_id;             /**< Bosch LWS CAN identifier (Standard 11-bit: 0x2B0 per Bosch LWS datasheet) */
 
     /* Xsens MTi IMU */
     uint32_t imu_can_id;             /**< Xsens MTi CAN identifier (Standard 11-bit) */

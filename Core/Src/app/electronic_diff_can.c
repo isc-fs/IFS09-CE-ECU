@@ -130,20 +130,45 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
     if (!cfg || !data || dlc == 0) return false;
 
     /* 1. Bosch Motorsport LWS Steering Wheel Angle Sensor */
-    if (lws && can_id == cfg->can.lws_can_id && dlc >= 4) {
-        /* Bytes 0-1: Angle signed int16 Big-Endian, 0.1 deg/LSB */
-        const int16_t raw_angle = read_be16_signed(&data[0]);
-        lws->steering_angle_deg = ((float)raw_angle) * 0.1f;
-        lws->steering_angle_rad = lws->steering_angle_deg * DEG_TO_RAD;
+    if (lws && (can_id == cfg->can.lws_can_id || can_id == 0x2B0 || can_id == 0x0C0) && dlc >= 4) {
+        if (can_id == 0x2B0 || cfg->can.lws_can_id == 0x2B0) {
+            /* Bosch Motorsport LWS standard (Datasheet LWS F02U.V02.894-01):
+             * CAN ID: 0x2B0 (LWS_Standard)
+             * Byte order: LSB (Intel / Little-Endian)
+             * Bytes 0-1: LWS_ANGLE signed int16 LE, 0.1 deg/LSB (+/-780 deg, 0x7FFF = invalid/uncalibrated)
+             * Byte 2:    LWS_SPEED uint8, 4.0 deg/s/LSB (0 to 1,016 deg/s, 0xFF = invalid)
+             * Byte 3:    bits 0: OK, 1: CAL, 2: TRIM (0x07 = calibrated & valid)
+             */
+            const int16_t raw_angle = (int16_t)(((uint16_t)data[0]) | (((uint16_t)data[1]) << 8));
+            lws->steering_angle_deg = ((float)raw_angle) * 0.1f;
+            lws->steering_angle_rad = lws->steering_angle_deg * DEG_TO_RAD;
 
-        /* Bytes 2-3: Speed signed int16 Big-Endian, 1.0 deg/s LSB */
-        const int16_t raw_speed = read_be16_signed(&data[2]);
-        lws->steering_speed_deg_s = (float)raw_speed;
+            const uint8_t raw_speed = data[2];
+            lws->steering_speed_deg_s = ((float)raw_speed) * 4.0f;
 
-        lws->status_code = (dlc >= 5) ? data[4] : 0x00;
-        lws->valid = true;
-        lws->last_rx_timestamp_ms = now_ms;
-        return true;
+            lws->status_code = data[3];
+            const bool ok = (data[3] & 0x01) != 0;
+            const bool cal = (data[3] & 0x02) != 0;
+            const bool trim = (data[3] & 0x04) != 0;
+            const bool angle_valid = (raw_angle != 0x7FFF);
+
+            lws->valid = ok && cal && trim && angle_valid;
+            lws->last_rx_timestamp_ms = now_ms;
+            return true;
+        } else {
+            /* Legacy / fallback format (0x0C0 Big-Endian) */
+            const int16_t raw_angle = read_be16_signed(&data[0]);
+            lws->steering_angle_deg = ((float)raw_angle) * 0.1f;
+            lws->steering_angle_rad = lws->steering_angle_deg * DEG_TO_RAD;
+
+            const int16_t raw_speed = read_be16_signed(&data[2]);
+            lws->steering_speed_deg_s = (float)raw_speed;
+
+            lws->status_code = (dlc >= 5) ? data[4] : 0x00;
+            lws->valid = true;
+            lws->last_rx_timestamp_ms = now_ms;
+            return true;
+        }
     }
 
     /* 2. Xsens MTi IMU Sensor */

@@ -76,7 +76,7 @@ DiffConfig diff_config_get_default(void) {
     cfg.timeouts.mode_debounce_ms         = 150;
 
     /* CAN identification and addressing */
-    cfg.can.lws_can_id                    = 0x0C0;
+    cfg.can.lws_can_id                    = 0x2B0;
     cfg.can.imu_can_id                    = 0x201;
     cfg.can.udv_can_id                    = 0x507;
     cfg.can.dti_use_extended_id           = false;
