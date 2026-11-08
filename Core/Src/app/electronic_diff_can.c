@@ -131,7 +131,7 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
 
     /* 1. Bosch Motorsport LWS Steering Wheel Angle Sensor */
     if (lws && (can_id == cfg->can.lws_can_id || can_id == 0x2B0 || can_id == 0x0C0) && dlc >= 4) {
-        if (can_id == 0x2B0 || cfg->can.lws_can_id == 0x2B0) {
+        if (can_id == 0x2B0 || (can_id == cfg->can.lws_can_id && cfg->can.lws_can_id != 0x0C0)) {
             /* Bosch Motorsport LWS standard (Datasheet LWS F02U.V02.894-01):
              * CAN ID: 0x2B0 (LWS_Standard)
              * Byte order: LSB (Intel / Little-Endian)

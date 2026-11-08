@@ -32,6 +32,7 @@ jobs:
   regenerate-dbc:
     name: dbcinator (regenerate ecu.dbc)
     runs-on: ubuntu-latest
+    if: ${{ secrets.DBCINATOR_APP_ID != '' && secrets.DBCINATOR_PRIVATE_KEY != '' }}
     steps:
       - name: Regenerate docs/dbc/ecu.dbc from the code-first DSL
         uses: isc-fs/IFS08-DBCinator/actions/dbc-bot@v1.0.0
