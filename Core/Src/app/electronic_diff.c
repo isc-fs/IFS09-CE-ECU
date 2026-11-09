@@ -234,8 +234,8 @@ void electronic_diff_step(DiffState* state,
         const float k_diff = electronic_diff_calc_k_diff(config, road_wheel_angle, in->vehicle_speed_mps);
         const float tan_delta = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
         const float dir = (road_wheel_angle >= 0.0f) ? 1.0f : -1.0f;
-        /* Scale k_diff (0..1) to achieve up to 35% base torque transfer across the axle */
-        const float delta_t_static = t_base * k_diff * dir * 0.35f;
+        /* Scale k_diff (0..1) to achieve up to 45% base torque transfer across the axle */
+        const float delta_t_static = t_base * k_diff * dir * 0.45f;
 
         /* Dynamic feedforward based on steering wheel angular velocity:
          * Provides crisp turn-in yaw assist without closed-loop hunting or driver fight */
