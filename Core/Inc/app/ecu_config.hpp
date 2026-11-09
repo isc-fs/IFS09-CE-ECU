@@ -144,6 +144,7 @@ inline constexpr uint16_t StubBrakeRaw         = 0;
 inline constexpr bool StubNoAms      = false;  // assume precharge-OK + AMS-healthy (no AMS on the bus). DISABLES the AMS gate.
 inline constexpr bool StubNoInverter = false;  // fake inverter present/vconfig/Ready (no inverter). DISABLES the inverter handshake.
 inline constexpr bool StubStart      = false;  // assume start button pressed (PB5 unwired). MANUAL R2D only — keep false for a DV/uDV R2D test (else it preempts the 0x510 path).
+inline constexpr bool EnableHilForceStart = false; // BENCH / HIL: Allow CAN pit-diag frame (0x7E0 byte 4) to force the start-button input. Gated at compile-time -- folds away completely in flight/production builds.
 
 // ---- BENCH TELEMETRY stub (bring-up only) — config toggle, NOT a build flag -
 // When true, TelemetryTask fills the VehicleState with a deterministic synthetic

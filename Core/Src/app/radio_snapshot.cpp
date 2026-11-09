@@ -70,7 +70,12 @@ void serialize_radio_snapshot(std::uint8_t out[kRadioSnapshotWireSize],
     put_le16(&out[92], in.gps_course_deg_x100);
     out[94] = in.gps_sats;
     out[95] = in.gps_has_fix;
-    // [96..101] reserved (already zero).
+    // --- Inverter extended diagnostics & power telemetry [96..106] ---
+    put_le16(&out[96],  in.inv_pwrstg_bits);
+    out[98] = in.inv_emctrl_bits;
+    put_i16(&out[99],   in.inv_torque_est_nm);
+    put_i16(&out[101],  in.inv_torque_max_feas);
+    put_i32(&out[103],  in.inv_ac_power_W);
 }
 
 void build_radio_fragment(std::uint8_t out[kRadioFragmentSize],

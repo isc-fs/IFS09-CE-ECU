@@ -19,6 +19,7 @@
 #pragma once
 
 #include "app/can_frame.hpp"
+#include "app/electronic_diff_can.h"
 
 #include <cstdint>
 
@@ -155,6 +156,12 @@ struct VehicleState {
     // dangerous direction: those two modules cook with the cap reading 100 %.
     std::uint32_t last_tmax_a_tick  = 0;      // 0x136 seen (modules 0-2)
     std::uint32_t last_tmax_b_tick  = 0;      // 0x137 seen (modules 3-4)
+
+    // --- Electronic Differential (Torque Vectoring) Sensors & Inverters ---
+    BoschLwsState    diff_lws{};
+    XsensImuState    diff_imu{};
+    DtiInverterState diff_inv_left{};
+    DtiInverterState diff_inv_right{};
 };
 
 class VehicleService {
@@ -166,6 +173,9 @@ public:
     bool update_from_frame(const CanFrame& f) noexcept;
 
     [[nodiscard]] VehicleState snapshot() const noexcept;
+
+    // Check timeouts for differential sensors (LWS, IMU, DTI inverters) on single-writer state
+    void check_diff_timeouts(std::uint32_t now_ms, const DiffConfig& cfg) noexcept;
 
     // The DC-bus voltage to PUBLISH on the 0x100 heartbeat, given a snapshot and
     // the current tick. Pure, so the SIL pins it -- and it is worth pinning,

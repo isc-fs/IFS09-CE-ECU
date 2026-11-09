@@ -26,6 +26,9 @@ void Controller::enter_(CtrlState s, uint32_t now_ms) noexcept {
     // R2D entry re-decides the mode from whichever trigger fires.
     if (s < CtrlState::R2dDelay || s == CtrlState::AmsError) {
         dv_latched_ = false;
+        ev_2_3_latched_ = false;
+        brake_cut_active_ = false;
+        brake_cut_since_ms_ = 0;
     }
 }
 
@@ -42,19 +45,37 @@ CtrlOutput Controller::step(const CtrlInputs& in, uint32_t now_ms) noexcept {
     if (torque < DeadbandLowPct) torque = 0;
     else if (torque > DeadbandHighPct) torque = 100;
 
-    // The EV.2.3 brake+throttle plausibility cut USED TO BE HERE. It was deleted
-    // in FS-Rules 2024 and is gone from the firmware with it.
-    //
-    // It was a latching torque cut: brake above cal.brake_pressed with demand
-    // over 25 % zeroed torque until the driver fully lifted. Two reasons not to
-    // keep it as an optional safety net once the rule stopped requiring it --
-    // it tripped on brake_pressed, which is still COMMISSION-tagged and has
-    // never been measured, and being a latch, a spurious trip took drive away
-    // mid-corner until a full lift. An unnecessary cut on an unverified
-    // threshold is a hazard of its own.
-    //
-    // T.11.8.9 below is UNAFFECTED -- APPS-disagreement is a different rule and
-    // is still required.
+    // T.11.8.8 (formerly EV.2.3) Brake / APPS Plausibility Check:
+    // In manual driving (!dv_latched_), mechanical braking coincident with > 25% APPS
+    // pedal travel must immediately cut tractive power to 0, latched until APPS travel
+    // is released below 5% (deadband).
+    // In autonomous driving (dv_latched_), this is bypassed because the EBS holds hard
+    // braking while vehicle is controlled by autonomous pipeline.
+    // Brake / APPS Plausibility Check (with 100 ms persistence window):
+    // In manual driving (!dv_latched_), mechanical braking coincident with > 25% APPS
+    // must persist for >= 100 ms before latching a complete tractive cut.
+    // Momentary brake taps, curb bounces, and trail-braking transitions (< 100 ms)
+    // are ignored so the driver is never stranded mid-corner.
+    if (!dv_latched_) {
+        const bool brake_tripped = (torque > 25u && in.brake_raw > in.cal.brake_pressed);
+        if (brake_tripped) {
+            if (!brake_cut_active_) {
+                brake_cut_active_ = true;
+                brake_cut_since_ms_ = now_ms;
+            } else if (static_cast<uint32_t>(now_ms - brake_cut_since_ms_) >= 100u) {
+                ev_2_3_latched_ = true;
+            }
+        } else {
+            brake_cut_active_ = false;
+        }
+
+        if (torque <= 5u) {
+            ev_2_3_latched_ = false;
+        }
+        if (ev_2_3_latched_) {
+            torque = 0;
+        }
+    }
 
     // T.11.8.9 APPS disagreement, honouring the 100 ms persistence window.
     const int diff = static_cast<int>(a1) - static_cast<int>(a2);

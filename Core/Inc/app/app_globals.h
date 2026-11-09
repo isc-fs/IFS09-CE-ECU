@@ -34,6 +34,7 @@ extern volatile uint32_t g_task_step[ECU_TASK_COUNT];
  * enable command (magic 0xDEADBEEF), read by ControlTask. The 0x704 health
  * frame is deliberately ALWAYS-ON (ungated) -- it's the diagnostic lifeline. */
 extern volatile uint8_t g_pit_diag_enabled;
+extern volatile uint8_t g_hil_force_start;
 extern uint32_t g_last_torque_pct;
 extern uint8_t  g_last_ctrl_state;
 

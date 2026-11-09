@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.15)
 
 # =============================================================================
 # ECU SIL (Software-In-The-Loop) host build -- post-C++-rewrite.
@@ -36,6 +36,9 @@ add_executable(ecu09_sil
     ${REPO}/Core/Src/app/vehicle_service.cpp
     ${REPO}/Core/Src/app/gps_nmea.cpp
     ${REPO}/Core/Src/app/gps_tx.cpp
+    ${REPO}/Core/Src/app/differential_config.c
+    ${REPO}/Core/Src/app/electronic_diff.c
+    ${REPO}/Core/Src/app/electronic_diff_can.c
 )
 
 target_include_directories(ecu09_sil PRIVATE ${REPO}/Core/Inc)
@@ -65,4 +68,5 @@ add_test(NAME SIL_PrechargeNoAck  COMMAND ecu09_sil --test-precharge-no-ack)
 add_test(NAME SIL_Plausibility    COMMAND ecu09_sil --test-plausibility)
 add_test(NAME SIL_InvTsOffRecovery COMMAND ecu09_sil --test-inverter-ts-off)
 add_test(NAME SIL_Gps             COMMAND ecu09_sil --test-gps)
+add_test(NAME SIL_ElectronicDiff  COMMAND ecu09_sil --test-diff)
 add_test(NAME SIL_All             COMMAND ecu09_sil --test-all)

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 # ============ VERBATIM from IFS08-TE feat/receptor_08 ISC_RTT_serial.py ============
-SNAPSHOT_SIZE = 102  # kRadioSnapshotWireSize
+SNAPSHOT_SIZE = 107  # kRadioSnapshotWireSize
 
 def _u16(data, offset): return struct.unpack_from('<H', data, offset)[0]
 def _i16(data, offset): return struct.unpack_from('<h', data, offset)[0]
@@ -58,6 +58,17 @@ def _decode_snapshot(data: bytes) -> dict:
         'inv_rpm':             _i32(data, 70),
         'inv_speed_actual':    _i32(data, 74),
         'inv_current_actual':  _i32(data, 78),
+        'gps_lat_deg1e7':      _i32(data, 82),
+        'gps_lon_deg1e7':      _i32(data, 86),
+        'gps_speed_kmh_x100':  _u16(data, 90),
+        'gps_course_deg_x100': _u16(data, 92),
+        'gps_sats':            data[94],
+        'gps_has_fix':         data[95],
+        'inv_pwrstg_bits':     _u16(data, 96),
+        'inv_emctrl_bits':     data[98],
+        'inv_torque_est_nm':   _i16(data, 99),
+        'inv_torque_max_feas': _i16(data, 101),
+        'inv_ac_power_W':      _i32(data, 103),
     }
 # ==================================================================================
 
@@ -74,6 +85,12 @@ EXPECTED = {
     'inv_state': 6, 'last_vconfig_tick': 1, 'inv_error': 0, 'inv_dc_bus_V': 550,
     'inv_temp_motor1': 72, 'inv_temp_pwrstg': 68, 'inv_temp_board': 55,
     'inv_rpm': -12345, 'inv_speed_actual': 0, 'inv_current_actual': 0,
+    'gps_lat_deg1e7': 406353900, 'gps_lon_deg1e7': -36927966,
+    'gps_speed_kmh_x100': 4148, 'gps_course_deg_x100': 8440,
+    'gps_sats': 8, 'gps_has_fix': 1,
+    'inv_pwrstg_bits': 0x0155, 'inv_emctrl_bits': 0x4A,
+    'inv_torque_est_nm': 125, 'inv_torque_max_feas': 220,
+    'inv_ac_power_W': 45000,
 }
 
 

@@ -24,15 +24,15 @@
 
 namespace ecu {
 
-inline constexpr unsigned     kRadioSnapshotWireSize  = 102u;  // kRadioSnapshotWireSize
+inline constexpr unsigned     kRadioSnapshotWireSize  = 107u;  // kRadioSnapshotWireSize
 inline constexpr unsigned     kRadioFragPayloadSize   = 24u;   // bytes 8..31 of a fragment
-inline constexpr unsigned     kRadioSnapshotFragments = 5u;    // ceil(102/24)
+inline constexpr unsigned     kRadioSnapshotFragments = 5u;    // ceil(107/24)
 inline constexpr unsigned     kRadioFragmentSize      = 32u;   // full nRF24 payload
 inline constexpr std::uint8_t kRadioMagic             = 0xECu;
 inline constexpr std::uint8_t kRadioVersionSnapshot   = 0x03u;
 inline constexpr std::uint8_t kRadioKindSnapshot      = 0x06u;
 
-// Everything that goes into the 102-byte snapshot, as a plain POD. Placeholders
+// Everything that goes into the 107-byte snapshot, as a plain POD. Placeholders
 // (soc, inv_speed_actual, inv_current_actual) have no source in this firmware
 // yet -- pass 0; the ground station parses the slot regardless.
 struct RadioSnapshotInputs {
@@ -72,20 +72,22 @@ struct RadioSnapshotInputs {
     std::int32_t  inv_rpm            = 0;   // [70..73]
     std::int32_t  inv_speed_actual   = 0;   // [74..77] PLACEHOLDER (no source)
     std::int32_t  inv_current_actual = 0;   // [78..81] PLACEHOLDER (no source)
-    // --- GPS (MTK3339 / USART10, see gps_nmea.hpp). Occupies the reserved tail,
-    //     so the wire size stays 102 bytes and a ground station that predates
-    //     these fields keeps working -- it just ignores them. The TE-side
-    //     _decode_snapshot() must be extended to SHOW them. ---
+    // --- GPS (MTK3339 / USART10, see gps_nmea.hpp) ---
     std::int32_t  gps_lat_deg1e7     = 0;   // [82..85]  degrees * 1e7, +N/-S
     std::int32_t  gps_lon_deg1e7     = 0;   // [86..89]  degrees * 1e7, +E/-W
     std::uint16_t gps_speed_kmh_x100 = 0;   // [90..91]  km/h * 100
     std::uint16_t gps_course_deg_x100= 0;   // [92..93]  deg * 100
     std::uint8_t  gps_sats           = 0;   // [94]
     std::uint8_t  gps_has_fix        = 0;   // [95]  gate lat/lon/speed on this
-    // [96..101] reserved / zero
+    // --- Inverter extended diagnostics & power telemetry [96..106] ---
+    std::uint16_t inv_pwrstg_bits    = 0;   // [96..97]  CAN 0x461 bits 47..55 (L1 PwrStg 9 bits)
+    std::uint8_t  inv_emctrl_bits    = 0;   // [98]      CAN 0x461 bits 39..46 (L2 EMCtrl FOC 8 bits)
+    std::int16_t  inv_torque_est_nm  = 0;   // [99..100] CAN 0x468 bytes 2..3 (Nm)
+    std::int16_t  inv_torque_max_feas= 0;   // [101..102]CAN 0x467 bytes 0..1 (Torque_Max_Feas)
+    std::int32_t  inv_ac_power_W     = 0;   // [103..106]CAN 0x466 bytes 3..5 (Watts)
 };
 
-// Fill `out` (102 bytes) with the little-endian snapshot per _decode_snapshot().
+// Fill `out` (107 bytes) with the little-endian snapshot per _decode_snapshot().
 void serialize_radio_snapshot(std::uint8_t out[kRadioSnapshotWireSize],
                               const RadioSnapshotInputs& in) noexcept;
 

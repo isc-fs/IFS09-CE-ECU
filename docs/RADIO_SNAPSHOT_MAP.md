@@ -44,9 +44,9 @@ Path: STM32 → nRF24 → Arduino Nano → USB-serial (`AA 55 20 <32B> <XOR>`) �
 | 7 | reserved | 0 |
 | 8..31 | data | 24-byte slice: `snapshot[frag_idx*24 .. +24)` (last frag zero-padded) |
 
-Five fragments reassemble the **102-byte** snapshot (`5 × 24 = 120 ≥ 102`).
+Five fragments reassemble the **107-byte** snapshot (`5 × 24 = 120 ≥ 107`).
 
-## 102-byte snapshot layout (little-endian)
+## 107-byte snapshot layout (little-endian)
 
 | Offset | Field | Type | Firmware source |
 |---|---|---|---|
@@ -86,19 +86,16 @@ Five fragments reassemble the **102-byte** snapshot (`5 × 24 = 120 ≥ 102`).
 | 92..93 | gps_course_deg_x100 | u16 | course over ground, deg * 100 |
 | 94 | gps_sats | u8 | satellites in view (GGA) |
 | 95 | gps_has_fix | u8 | 1 = valid fix — **gate the four fields above on this** |
-| 96..101 | reserved | 6 B | 0 |
+| 96..97 | inv_pwrstg_bits | u16 | `veh.inv_pwrstg_bits` (0x461 bits 47..55, L1 9-bit) |
+| 98 | inv_emctrl_bits | u8 | `veh.inv_emctrl_bits` (0x461 bits 39..46, L2 8-bit) |
+| 99..100 | inv_torque_est_nm | i16 | `veh.inv_torque_est_nm` (0x468 bytes 2..3) |
+| 101..102 | inv_torque_max_feas | i16 | `veh.inv_torque_max_feas` (0x467 bytes 0..1) |
+| 103..106 | inv_ac_power_W | i32 | `veh.inv_ac_power_W` (0x466 bytes 3..5, Watts) |
 
-> **GPS is live since #147.** The MTK3339 on USART10 fills what used to be the
-> reserved tail. The wire size is UNCHANGED at 102 bytes, so an un-updated
-> ground station keeps working — it simply ignores 82..95. Source is
-> `GpsService` (a local UART peripheral), NOT `VehicleService`.
->
-> **Always gate on `gps_has_fix`.** Position and speed carry the LAST VALID
-> values when the fix drops; they do not zero out, so an ungated display shows
-> a stale position as if it were live.
->
-> Ground-station decode is tracked in isc-fs/IFS08-TE#1 — until that lands the
-> bytes are transmitted but not shown.
+> **Inverter diagnostics and power telemetry live at [96..106].**
+> L1/L2 sub-faults (17 diagnostic flags), torque estimation vs ceiling, and
+> AC power delivered to the motor are transmitted in the tail of fragment 4.
+> 5 fragments cover up to 120 bytes ($5 \times 24$), leaving [107..119] zero-padded.
 
 ## Cadence
 

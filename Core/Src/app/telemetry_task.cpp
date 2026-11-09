@@ -214,6 +214,11 @@ void send_radio_snapshot(const VehicleState& v, uint16_t seq, uint32_t tick_ms) 
     in.inv_rpm            = v.inv_rpm;
     in.inv_speed_actual   = 0;  // PLACEHOLDER: no inverter speed/current source.
     in.inv_current_actual = 0;
+    in.inv_pwrstg_bits    = v.inv_pwrstg_bits;
+    in.inv_emctrl_bits    = v.inv_emctrl_bits;
+    in.inv_torque_est_nm  = v.inv_torque_est_nm;
+    in.inv_torque_max_feas= v.inv_torque_max_feas;
+    in.inv_ac_power_W     = v.inv_ac_power_W;
 
     // GPS (0x508/0x509 also carry this; here it rides the radio to the pit).
     // Straight from GpsService -- NOT from VehicleService: the GPS is a local
@@ -254,15 +259,20 @@ void send_radio_snapshot(const VehicleState& v, uint16_t seq, uint32_t tick_ms) 
 [[maybe_unused]] void make_dummy_vehicle_state(VehicleState& v, uint16_t seq) {
     const uint16_t s = seq;
     // --- inverter (FDCAN1 0x461/0x463/0x464/0x466) ---
-    v.inv_state         = 4u;                                       // Ready
-    v.inv_error         = 0u;
-    v.inv_rpm           = static_cast<int32_t>((s % 160u) * 50u);   // 0..7950 erpm ramp
-    v.inv_dc_bus_V      = static_cast<uint16_t>(380u + (s % 40u));  // ~380..419 V
-    v.inv_temp_board    = static_cast<uint8_t>(30u + (s % 30u));    // raw byte (-50 -> degC)
-    v.inv_temp_pwrstg   = static_cast<uint8_t>(35u + (s % 30u));
-    v.inv_temp_motor1   = static_cast<uint8_t>(40u + (s % 30u));
-    v.inv_temp_motor2   = static_cast<uint8_t>(42u + (s % 30u));
-    v.last_vconfig_tick = 1u;                                       // -> vconfig_active = 1
+    v.inv_state           = 4u;                                       // Ready
+    v.inv_error           = 0u;
+    v.inv_pwrstg_bits     = 0u;
+    v.inv_emctrl_bits     = 0u;
+    v.inv_torque_est_nm   = static_cast<int16_t>((s % 50u) * 2);
+    v.inv_torque_max_feas = 220;
+    v.inv_ac_power_W      = static_cast<int32_t>((s % 80u) * 1000);
+    v.inv_rpm             = static_cast<int32_t>((s % 160u) * 50u);   // 0..7950 erpm ramp
+    v.inv_dc_bus_V        = static_cast<uint16_t>(380u + (s % 40u));  // ~380..419 V
+    v.inv_temp_board      = static_cast<uint8_t>(30u + (s % 30u));    // raw byte (-50 -> degC)
+    v.inv_temp_pwrstg     = static_cast<uint8_t>(35u + (s % 30u));
+    v.inv_temp_motor1     = static_cast<uint8_t>(40u + (s % 30u));
+    v.inv_temp_motor2     = static_cast<uint8_t>(42u + (s % 30u));
+    v.last_vconfig_tick   = 1u;                                       // -> vconfig_active = 1
     // --- AMS / ACU (FDCAN2) ---
     v.ok_precharge  = true;
     v.ams_fsm_state = 2u;                                           // any non-Error state

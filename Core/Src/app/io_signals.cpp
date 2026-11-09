@@ -2,6 +2,7 @@
 
 #include "app/io_signals.hpp"
 
+#include "app/app_globals.h"
 #include "app/ecu_config.hpp"  // config::StubBrakeRaw (brake stub value/enable)
 
 #include "adc.h"     // hadc3
@@ -57,7 +58,11 @@ void IoSignals::read(IoInputs& out) noexcept {
     if constexpr (config::StubStart) {
         pressed = true;
     } else {
-        pressed = (HAL_GPIO_ReadPin(START_GPIO_Port, START_Pin) == GPIO_PIN_SET);
+        bool hil_force = false;
+        if constexpr (config::EnableHilForceStart) {
+            hil_force = (g_hil_force_start != 0u);
+        }
+        pressed = (HAL_GPIO_ReadPin(START_GPIO_Port, START_Pin) == GPIO_PIN_SET) || hil_force;
     }
     out.start_button = debounce_start(pressed);
 }
