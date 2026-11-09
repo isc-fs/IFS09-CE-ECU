@@ -411,20 +411,29 @@ void electronic_diff_step(DiffState* state,
     }
 
     /* 8. Slew-rate limiting for bump-less transitions:
-     * Prevents abrupt torque steps during mode degradation or driver transitions */
-    const float max_step_up = config->limits.max_slew_rate_nm_s * dt;
-    const float max_step_down = (out->diag_flags & DIFF_FLAG_EMERGENCY_SPIN)
-        ? (config->limits.max_slew_rate_nm_s * dt * 8.0f)
-        : (config->limits.max_slew_rate_nm_s * dt * 2.5f);
+     * Prevents abrupt torque steps during mode degradation or driver transitions.
+     * EXCEPTION: Asymmetric inverter faults bypass slew-rate limiting and cut torque
+     * immediately (0 ms lag) to eliminate uncommanded yaw spin moments. */
+    if (out->diag_flags & DIFF_FLAG_ASYMMETRIC_FAULT) {
+        out->torque_left_nm  = 0.0f;
+        out->torque_right_nm = 0.0f;
+        state->last_torque_left_nm  = 0.0f;
+        state->last_torque_right_nm = 0.0f;
+    } else {
+        const float max_step_up = config->limits.max_slew_rate_nm_s * dt;
+        const float max_step_down = (out->diag_flags & DIFF_FLAG_EMERGENCY_SPIN)
+            ? (config->limits.max_slew_rate_nm_s * dt * 8.0f)
+            : (config->limits.max_slew_rate_nm_s * dt * 2.5f);
 
-    const float d_left  = clampf(t_left_raw - state->last_torque_left_nm, -max_step_down, max_step_up);
-    const float d_right = clampf(t_right_raw - state->last_torque_right_nm, -max_step_down, max_step_up);
+        const float d_left  = clampf(t_left_raw - state->last_torque_left_nm, -max_step_down, max_step_up);
+        const float d_right = clampf(t_right_raw - state->last_torque_right_nm, -max_step_down, max_step_up);
 
-    out->torque_left_nm  = state->last_torque_left_nm + d_left;
-    out->torque_right_nm = state->last_torque_right_nm + d_right;
+        out->torque_left_nm  = state->last_torque_left_nm + d_left;
+        out->torque_right_nm = state->last_torque_right_nm + d_right;
 
-    state->last_torque_left_nm  = out->torque_left_nm;
-    state->last_torque_right_nm = out->torque_right_nm;
+        state->last_torque_left_nm  = out->torque_left_nm;
+        state->last_torque_right_nm = out->torque_right_nm;
+    }
 
     /* 9. Convert torque to peak AC current for DTI Inverter: I_pk = T / K_t,pk */
     if (config->vehicle.kt_peak_nm_per_a > 1e-4f) {
