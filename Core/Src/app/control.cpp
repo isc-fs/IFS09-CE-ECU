@@ -27,6 +27,8 @@ void Controller::enter_(CtrlState s, uint32_t now_ms) noexcept {
     if (s < CtrlState::R2dDelay || s == CtrlState::AmsError) {
         dv_latched_ = false;
         ev_2_3_latched_ = false;
+        brake_cut_active_ = false;
+        brake_cut_since_ms_ = 0;
     }
 }
 
@@ -49,10 +51,24 @@ CtrlOutput Controller::step(const CtrlInputs& in, uint32_t now_ms) noexcept {
     // is released below 5% (deadband).
     // In autonomous driving (dv_latched_), this is bypassed because the EBS holds hard
     // braking while vehicle is controlled by autonomous pipeline.
+    // Brake / APPS Plausibility Check (with 100 ms persistence window):
+    // In manual driving (!dv_latched_), mechanical braking coincident with > 25% APPS
+    // must persist for >= 100 ms before latching a complete tractive cut.
+    // Momentary brake taps, curb bounces, and trail-braking transitions (< 100 ms)
+    // are ignored so the driver is never stranded mid-corner.
     if (!dv_latched_) {
-        if (torque > 25u && in.brake_raw > in.cal.brake_pressed) {
-            ev_2_3_latched_ = true;
+        const bool brake_tripped = (torque > 25u && in.brake_raw > in.cal.brake_pressed);
+        if (brake_tripped) {
+            if (!brake_cut_active_) {
+                brake_cut_active_ = true;
+                brake_cut_since_ms_ = now_ms;
+            } else if (static_cast<uint32_t>(now_ms - brake_cut_since_ms_) >= 100u) {
+                ev_2_3_latched_ = true;
+            }
+        } else {
+            brake_cut_active_ = false;
         }
+
         if (torque <= 5u) {
             ev_2_3_latched_ = false;
         }

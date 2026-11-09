@@ -1225,8 +1225,14 @@ static void test_brake_plausibility_t11_8_8() {
     CHECK(o.torque_pct > 25, "50% APPS delivers torque without brake");
 
     in.brake_raw = in.cal.brake_pressed + 200;
+    // Momentary tap under 100ms must NOT cut torque (Ajuste 1: debounce window)
     o = c.step(in, t); t += ControlPeriodMs;
-    CHECK(o.torque_pct == 0, "T.11.8.8 cuts torque when brake pressed with APPS");
+    CHECK(o.torque_pct > 25, "Momentary brake tap under 100ms does NOT cut torque");
+
+    // Advance beyond 100 ms persistence window
+    t += 100;
+    o = c.step(in, t); t += ControlPeriodMs;
+    CHECK(o.torque_pct == 0, "Persistent braking (>=100ms) with APPS cuts torque to 0");
 
     in.brake_raw = 0;
     o = c.step(in, t); t += ControlPeriodMs;
