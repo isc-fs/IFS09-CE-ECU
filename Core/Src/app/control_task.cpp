@@ -76,6 +76,7 @@ extern "C" void ecu_control_task_run(void *argument) {
         // --- inputs ---
         IoInputs in{};
         io.read(in);
+        vs.check_diff_timeouts(now, diff_cfg);
         const VehicleState veh = vs.snapshot();
 
         CtrlInputs ci{};
@@ -95,10 +96,30 @@ extern "C" void ecu_control_task_run(void *argument) {
             ci.inv_state         = config::InvReadyState;
             ci.inv_dc_bus_V      = veh.inv_dc_bus_V;
         } else {
-            ci.inv_present       = VehicleService::is_fresh(now, veh.last_inv_tick, config::InvStaleMs);
-            ci.inv_vconfig_ready = (veh.last_vconfig_tick != 0u);
-            ci.inv_state         = veh.inv_state;
-            ci.inv_dc_bus_V      = veh.inv_dc_bus_V;
+            const bool legacy_inv_fresh = VehicleService::is_fresh(now, veh.last_inv_state_tick, config::InvStaleMs);
+            const bool dti_left_fresh   = veh.diff_inv_left.valid && VehicleService::is_fresh(now, veh.diff_inv_left.last_rx_timestamp_ms, diff_cfg.timeouts.inverter_timeout_ms);
+            const bool dti_right_fresh  = veh.diff_inv_right.valid && VehicleService::is_fresh(now, veh.diff_inv_right.last_rx_timestamp_ms, diff_cfg.timeouts.inverter_timeout_ms);
+
+            if (legacy_inv_fresh) {
+                ci.inv_present       = VehicleService::is_fresh(now, veh.last_inv_tick, config::InvStaleMs);
+                ci.inv_vconfig_ready = (veh.last_vconfig_tick != 0u);
+                ci.inv_state         = veh.inv_state;
+                ci.inv_dc_bus_V      = veh.inv_dc_bus_V;
+            } else if (dti_left_fresh && dti_right_fresh) {
+                ci.inv_present       = true;
+                ci.inv_vconfig_ready = true;
+                if (veh.diff_inv_left.fault_code != 0u || veh.diff_inv_right.fault_code != 0u) {
+                    ci.inv_state = config::InvHardFaultState;
+                } else {
+                    ci.inv_state = config::InvReadyState;
+                }
+                ci.inv_dc_bus_V      = static_cast<std::uint16_t>(veh.diff_inv_left.input_voltage_v);
+            } else {
+                ci.inv_present       = VehicleService::is_fresh(now, veh.last_inv_tick, config::InvStaleMs);
+                ci.inv_vconfig_ready = (veh.last_vconfig_tick != 0u);
+                ci.inv_state         = veh.inv_state;
+                ci.inv_dc_bus_V      = veh.inv_dc_bus_V;
+            }
         }
         // Bench stub (config::StubNoAms): no AMS on the bus (inverter on bench PSUs)
         // -> assume precharge complete + AMS healthy so the FSM can reach Active.
@@ -357,17 +378,7 @@ extern "C" void ecu_control_task_run(void *argument) {
         // brake implausibility trips, total_demand_nm is zeroed in this EXACT cycle,
         // so stale torque commands can never reach the physical actuators.
         //
-        // 1. Check sensor and inverter timeouts (isolated freshness tracking)
-        // Just like 0x135 for cell derating and 0x464 for motor thermal caps, the
-        // Bosch LWS and Xsens IMU track their own freshness ticks. A dead gyro
-        // cannot hide behind a healthy inverter packet.
-        electronic_diff_can_check_timeouts(&diff_cfg, now,
-                                            const_cast<BoschLwsState*>(&veh.diff_lws),
-                                            const_cast<XsensImuState*>(&veh.diff_imu),
-                                            const_cast<DtiInverterState*>(&veh.diff_inv_left),
-                                            const_cast<DtiInverterState*>(&veh.diff_inv_right));
-
-        // 2. Prepare differential inputs from validated driver request and telemetry
+        // 1. Prepare differential inputs from validated driver request and telemetry
         //
         // NET TORQUE PRESERVATION:
         // Driver request (out.torque_pct) maps to total axle torque (0..63.2 Nm for
@@ -379,20 +390,24 @@ extern "C" void ecu_control_task_run(void *argument) {
             : 0.0f;
         diff_in.total_torque_demand_nm   = total_demand_nm;
         diff_in.steering_wheel_angle_rad = veh.diff_lws.steering_angle_rad;
-        diff_in.steering_angle_valid     = veh.diff_lws.valid;
+        diff_in.steering_angle_valid     = veh.diff_lws.valid &&
+            VehicleService::is_fresh(now, veh.diff_lws.last_rx_timestamp_ms, diff_cfg.timeouts.steer_timeout_ms);
         diff_in.left_wheel_speed_rads    = veh.diff_inv_left.wheel_speed_rads;
         diff_in.right_wheel_speed_rads   = veh.diff_inv_right.wheel_speed_rads;
-        diff_in.wheel_speeds_valid       = veh.diff_inv_left.valid && veh.diff_inv_right.valid;
+        diff_in.wheel_speeds_valid       = veh.diff_inv_left.erpm_valid && veh.diff_inv_right.erpm_valid &&
+            VehicleService::is_fresh(now, veh.diff_inv_left.last_erpm_timestamp_ms, diff_cfg.timeouts.inverter_timeout_ms) &&
+            VehicleService::is_fresh(now, veh.diff_inv_right.last_erpm_timestamp_ms, diff_cfg.timeouts.inverter_timeout_ms);
         diff_in.vehicle_speed_mps        = (diff_in.wheel_speeds_valid)
             ? (0.5f * (diff_in.left_wheel_speed_rads + diff_in.right_wheel_speed_rads) * diff_cfg.vehicle.wheel_radius_m)
             : 0.0f;
         diff_in.measured_yaw_rate_rads   = veh.diff_imu.yaw_rate_rads;
         diff_in.lateral_accel_mps2       = veh.diff_imu.lateral_accel_mps2;
-        diff_in.imu_valid                = veh.diff_imu.valid;
-        const bool left_fault = (veh.diff_inv_left.fault_code != 0u) ||
-            (veh.diff_inv_left.last_rx_timestamp_ms > 0u && !veh.diff_inv_left.valid);
-        const bool right_fault = (veh.diff_inv_right.fault_code != 0u) ||
-            (veh.diff_inv_right.last_rx_timestamp_ms > 0u && !veh.diff_inv_right.valid);
+        diff_in.imu_valid                = veh.diff_imu.valid &&
+            VehicleService::is_fresh(now, veh.diff_imu.last_rx_timestamp_ms, diff_cfg.timeouts.imu_timeout_ms);
+        const bool left_fault = !config::StubNoInverter &&
+            ((veh.diff_inv_left.fault_code != 0u) || !veh.diff_inv_left.valid);
+        const bool right_fault = !config::StubNoInverter &&
+            ((veh.diff_inv_right.fault_code != 0u) || !veh.diff_inv_right.valid);
         diff_in.inv_left_fault           = left_fault;
         diff_in.inv_right_fault          = right_fault;
         diff_in.max_motor_torque_limit_nm= diff_cfg.vehicle.motor_max_torque_nm;
@@ -406,7 +421,7 @@ extern "C" void ecu_control_task_run(void *argument) {
             electronic_diff_init(&diff_state);
         }
 
-        // 3. Package and transmit DTI Inverter CAN commands (FDCAN1)
+        // 2. Package and transmit DTI Inverter CAN commands (FDCAN1)
         //
         // DTI INVERTER CAN2 PROTOCOL CONTRACT:
         // Uses Standard 11-bit IDs: Packet ID << 5 | Node ID.
@@ -415,7 +430,8 @@ extern "C" void ecu_control_task_run(void *argument) {
         //
         // Target current is scaled by 10 (0.1 A_pk/LSB), signed 16-bit Big-Endian.
         // Sent non-blocking via can_tx_post() so ControlTask never waits on FIFO.
-        const bool drive_enabled = (out.state == CtrlState::Active || out.state == CtrlState::WaitInvStandby);
+        const bool fatal_fault = left_fault || right_fault || ((diff_out.diag_flags & DIFF_FLAG_ASYMMETRIC_FAULT) != 0);
+        const bool drive_enabled = (out.state == CtrlState::Active || out.state == CtrlState::WaitInvStandby) && !fatal_fault;
         uint32_t can_id = 0;
         uint8_t dlc = 0;
         uint8_t data[8] = {};

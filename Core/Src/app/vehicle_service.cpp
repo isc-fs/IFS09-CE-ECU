@@ -136,20 +136,34 @@ bool VehicleService::is_fresh(std::uint32_t now, std::uint32_t last,
 
 // ---- single-writer update --------------------------------------------------
 
+void VehicleService::check_diff_timeouts(std::uint32_t now_ms, const DiffConfig& cfg) noexcept {
+    electronic_diff_can_check_timeouts(&cfg, now_ms,
+                                       &state_.diff_lws,
+                                       &state_.diff_imu,
+                                       &state_.diff_inv_left,
+                                       &state_.diff_inv_right);
+}
+
 bool VehicleService::update_from_frame(const CanFrame& f) noexcept {
     // --- Electronic Differential CAN Frames (Bosch LWS, Xsens IMU, DTI Telemetry) ---
-    static const DiffConfig diff_cfg = diff_config_get_default();
-    if (electronic_diff_can_process_rx(&diff_cfg, f.id, false, f.data, f.dlc, f.timestamp_ms,
-                                       &state_.diff_lws, &state_.diff_imu,
-                                       &state_.diff_inv_left, &state_.diff_inv_right)) {
-        if (state_.diff_inv_left.valid) {
-            state_.last_inv_tick = f.timestamp_ms;
-            state_.inv_dc_bus_V = static_cast<std::uint16_t>(state_.diff_inv_left.input_voltage_v);
-            state_.inv_rpm = state_.diff_inv_left.erpm;
-            state_.last_vconfig_tick = f.timestamp_ms;
-            state_.last_inv_s4_tick = f.timestamp_ms;
+    // Only processed on the inverter/sensor bus (FDCAN1) to prevent colliding with ACU frames (e.g. 0x021)
+    if (f.bus == static_cast<std::uint8_t>(CanBus::Inv)) {
+        static const DiffConfig diff_cfg = diff_config_get_default();
+        if (electronic_diff_can_process_rx(&diff_cfg, f.id, f.extended != 0u, f.data, f.dlc, f.timestamp_ms,
+                                           &state_.diff_lws, &state_.diff_imu,
+                                           &state_.diff_inv_left, &state_.diff_inv_right)) {
+            // Only update legacy inverter mirrors on left-inverter ERPM frame (0x20)
+            uint8_t pkt_id = 0, node_id = 0;
+            electronic_diff_can_parse_dti_id(&diff_cfg, f.id, &pkt_id, &node_id);
+            if (node_id == diff_cfg.can.dti_left_node_id && pkt_id == diff_cfg.can.dti_pkt_telemetry_erpm) {
+                state_.last_inv_tick = f.timestamp_ms;
+                state_.inv_dc_bus_V = static_cast<std::uint16_t>(state_.diff_inv_left.input_voltage_v);
+                state_.inv_rpm = state_.diff_inv_left.erpm;
+                state_.last_vconfig_tick = f.timestamp_ms;
+                state_.last_inv_s4_tick = f.timestamp_ms;
+            }
+            return true;
         }
-        return true;
     }
 
     // --- inverter bus (FDCAN1) ---

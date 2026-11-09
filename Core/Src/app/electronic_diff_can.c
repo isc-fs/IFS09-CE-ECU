@@ -129,8 +129,8 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
                                     DtiInverterState* inv_right) {
     if (!cfg || !data || dlc == 0) return false;
 
-    /* 1. Bosch Motorsport LWS Steering Wheel Angle Sensor */
-    if (lws && (can_id == cfg->can.lws_can_id || can_id == 0x2B0 || can_id == 0x0C0) && dlc >= 4) {
+    /* 1. Bosch Motorsport LWS Steering Wheel Angle Sensor (Standard 11-bit ID only) */
+    if (!is_ext_id && lws && (can_id == cfg->can.lws_can_id || can_id == 0x2B0 || can_id == 0x0C0) && dlc >= 4) {
         if (can_id == 0x2B0 || (can_id == cfg->can.lws_can_id && cfg->can.lws_can_id != 0x0C0)) {
             /* Bosch Motorsport LWS standard (Datasheet LWS F02U.V02.894-01):
              * CAN ID: 0x2B0 (LWS_Standard)
@@ -171,8 +171,8 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
         }
     }
 
-    /* 2. Xsens MTi IMU Sensor */
-    if (imu && can_id == cfg->can.imu_can_id && dlc >= 4) {
+    /* 2. Xsens MTi IMU Sensor (Standard 11-bit ID only) */
+    if (!is_ext_id && imu && can_id == cfg->can.imu_can_id && dlc >= 4) {
         /* Bytes 0-1: Yaw Rate (Rate of Turn Z) signed int16 Big-Endian, 0.001 rad/s */
         const int16_t raw_yaw = read_be16_signed(&data[0]);
         imu->yaw_rate_rads = ((float)raw_yaw) * 0.001f;
@@ -193,6 +193,9 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
     }
 
     /* 3. DTI Inverter Telemetry Frames */
+    if (is_ext_id != cfg->can.dti_use_extended_id) {
+        return false;
+    }
     uint8_t pkt_id = 0;
     uint8_t node_id = 0;
     electronic_diff_can_parse_dti_id(cfg, can_id, &pkt_id, &node_id);
@@ -223,6 +226,8 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
 
             target_inv->valid = true;
             target_inv->last_rx_timestamp_ms = now_ms;
+            target_inv->erpm_valid = true;
+            target_inv->last_erpm_timestamp_ms = now_ms;
             return true;
         } else if (pkt_id == cfg->can.dti_pkt_telemetry_current && dlc >= 4) {
             /* Packet 0x21: AC Current (0-1), DC Current (2-3) */
@@ -273,15 +278,21 @@ void electronic_diff_can_check_timeouts(const DiffConfig* cfg,
         }
     }
 
-    if (inv_left && inv_left->valid) {
-        if ((now_ms - inv_left->last_rx_timestamp_ms) > cfg->timeouts.inverter_timeout_ms) {
+    if (inv_left) {
+        if (inv_left->valid && (now_ms - inv_left->last_rx_timestamp_ms) > cfg->timeouts.inverter_timeout_ms) {
             inv_left->valid = false;
+        }
+        if (inv_left->erpm_valid && (now_ms - inv_left->last_erpm_timestamp_ms) > cfg->timeouts.inverter_timeout_ms) {
+            inv_left->erpm_valid = false;
         }
     }
 
-    if (inv_right && inv_right->valid) {
-        if ((now_ms - inv_right->last_rx_timestamp_ms) > cfg->timeouts.inverter_timeout_ms) {
+    if (inv_right) {
+        if (inv_right->valid && (now_ms - inv_right->last_rx_timestamp_ms) > cfg->timeouts.inverter_timeout_ms) {
             inv_right->valid = false;
+        }
+        if (inv_right->erpm_valid && (now_ms - inv_right->last_erpm_timestamp_ms) > cfg->timeouts.inverter_timeout_ms) {
+            inv_right->erpm_valid = false;
         }
     }
 }

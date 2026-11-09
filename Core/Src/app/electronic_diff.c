@@ -414,13 +414,15 @@ void electronic_diff_step(DiffState* state,
 
     /* 8. Slew-rate limiting for bump-less transitions:
      * Prevents abrupt torque steps during mode degradation or driver transitions.
-     * EXCEPTION: Asymmetric inverter faults bypass slew-rate limiting and cut torque
-     * immediately (0 ms lag) to eliminate uncommanded yaw spin moments. */
-    if (out->diag_flags & DIFF_FLAG_ASYMMETRIC_FAULT) {
+     * EXCEPTION: Asymmetric inverter faults and zero validated demand (APPS disagreement,
+     * brake plausibility cut, or neutral pedal) bypass slew-rate limiting and cut torque
+     * immediately (0 ms lag) to ensure instant safety shutoff without 170ms ramp latency. */
+    if ((out->diag_flags & DIFF_FLAG_ASYMMETRIC_FAULT) || (t_total <= 0.0f)) {
         out->torque_left_nm  = 0.0f;
         out->torque_right_nm = 0.0f;
         state->last_torque_left_nm  = 0.0f;
         state->last_torque_right_nm = 0.0f;
+        state->pid_integral_nm = 0.0f;
     } else {
         const float max_step_up = config->limits.max_slew_rate_nm_s * dt;
         const float max_step_down = (out->diag_flags & DIFF_FLAG_EMERGENCY_SPIN)

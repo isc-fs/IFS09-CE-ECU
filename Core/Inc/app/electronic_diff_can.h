@@ -66,6 +66,8 @@ typedef struct {
     bool     drive_enabled;            /**< Reported drive enable status */
     bool     valid;                    /**< True if telemetry is within timeout */
     uint32_t last_rx_timestamp_ms;     /**< System timestamp of last received frame */
+    bool     erpm_valid;               /**< True if ERPM speed telemetry is fresh */
+    uint32_t last_erpm_timestamp_ms;   /**< System timestamp of last received ERPM frame (0x20) */
 } DtiInverterState;
 
 /**

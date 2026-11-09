@@ -174,6 +174,9 @@ public:
 
     [[nodiscard]] VehicleState snapshot() const noexcept;
 
+    // Check timeouts for differential sensors (LWS, IMU, DTI inverters) on single-writer state
+    void check_diff_timeouts(std::uint32_t now_ms, const DiffConfig& cfg) noexcept;
+
     // The DC-bus voltage to PUBLISH on the 0x100 heartbeat, given a snapshot and
     // the current tick. Pure, so the SIL pins it -- and it is worth pinning,
     // because the failure it prevents is silent on both sides of the wire.
