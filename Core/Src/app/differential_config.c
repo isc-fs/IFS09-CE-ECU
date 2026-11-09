@@ -34,11 +34,15 @@ DiffConfig diff_config_get_default(void) {
     cfg.vehicle.rear_roll_stiffness_ratio = 0.4198167f;
     cfg.vehicle.road_friction_coeff       = 1.350f;
 
-    /* PID controller gains */
-    cfg.pid.kp                            = 18.0f;
-    cfg.pid.ki                            = 3.50f;
-    cfg.pid.kd                            = 1.20f;
-    cfg.pid.i_max_nm                      = 8.00f;
+    /* PID controller gains:
+     * Dimensioned for vehicle chassis yaw moment M_z [Nm].
+     * Delta_T_motor = (M_z * r_w) / (G * w) = M_z * 0.0136224.
+     * kp = 140.0 Nm/(rad/s) generates M_z ~ 124 Nm at e_r = 0.88 rad/s,
+     * producing Delta_T ~ 1.68 Nm and Delta_I ~ 4.84 A (> 3.0 A cornering assist). */
+    cfg.pid.kp                            = 140.0f;
+    cfg.pid.ki                            = 25.0f;
+    cfg.pid.kd                            = 8.00f;
+    cfg.pid.i_max_nm                      = 50.00f;
     cfg.pid.d_filter_alpha                = 0.25f;
 
     /* Gain scheduling table for mingomode */

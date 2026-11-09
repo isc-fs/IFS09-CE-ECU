@@ -221,6 +221,7 @@ private:
     CtrlState state_ = CtrlState::WaitInvVdcConfig;
     uint32_t  state_entry_ms_ = 0;
     bool      apps_disagree_active_ = false;
+    bool      ev_2_3_latched_ = false;
     uint32_t  apps_disagree_since_ms_ = 0;
     // The mode decision: latched by WHICH trigger fired at WaitStartBrake
     // (manual start+brake vs DV 0x510+EBS-brake); cleared on any exit from the

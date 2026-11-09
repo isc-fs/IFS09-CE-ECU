@@ -1210,6 +1210,39 @@ static void test_t11_8_9_window() {
     CHECK(!o.t11_8_9, "T.11.8.9 clears when sensors re-agree");
 }
 
+static void test_brake_plausibility_t11_8_8() {
+    std::printf("[brake_plausibility_t11_8_8]\n");
+    Controller c;
+    uint32_t t = 0;
+    drive_to_active(c, t);
+
+    CtrlInputs in = good_drive_inputs();
+    in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
+    in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
+    in.brake_raw = 0;
+
+    CtrlOutput o = c.step(in, t); t += ControlPeriodMs;
+    CHECK(o.torque_pct > 25, "50% APPS delivers torque without brake");
+
+    in.brake_raw = in.cal.brake_pressed + 200;
+    o = c.step(in, t); t += ControlPeriodMs;
+    CHECK(o.torque_pct == 0, "T.11.8.8 cuts torque when brake pressed with APPS");
+
+    in.brake_raw = 0;
+    o = c.step(in, t); t += ControlPeriodMs;
+    CHECK(o.torque_pct == 0, "T.11.8.8 remains latched with throttle held even after brake release");
+
+    in.apps1_raw = Apps1AdcMin;
+    in.apps2_raw = Apps2AdcMin;
+    o = c.step(in, t); t += ControlPeriodMs;
+    CHECK(o.torque_pct == 0, "Throttle released to 0");
+
+    in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
+    in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
+    o = c.step(in, t); t += ControlPeriodMs;
+    CHECK(o.torque_pct > 25, "T.11.8.8 unlatches after full throttle release");
+}
+
 static void test_ams_error() {
     std::printf("[ams_error]\n");
     Controller c;
@@ -3383,6 +3416,7 @@ static void run_all() {
     test_boot_trigger_gate();
     test_power_margin();
     test_t11_8_9_window();
+    test_brake_plausibility_t11_8_8();
     test_ams_error();
     test_cell_v_derate();
     test_cell_ir_compensation();

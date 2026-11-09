@@ -226,7 +226,9 @@ void electronic_diff_step(DiffState* state,
 
         const float k_diff = electronic_diff_calc_k_diff(config, road_wheel_angle, in->vehicle_speed_mps);
         const float tan_delta = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
-        float delta_t = t_base * k_diff * (config->vehicle.track_width_rear_m / (2.0f * config->vehicle.wheelbase_m)) * tan_delta;
+        const float dir = (road_wheel_angle >= 0.0f) ? 1.0f : -1.0f;
+        /* Scale k_diff (0..1) to achieve up to 35% base torque transfer across the axle */
+        float delta_t = t_base * k_diff * dir * 0.35f;
 
         /* Hard clamp to maximum allowable mechanical bias */
         delta_t = clampf(delta_t, -config->limits.max_delta_torque_nm, config->limits.max_delta_torque_nm);
