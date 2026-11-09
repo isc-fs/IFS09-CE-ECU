@@ -9,7 +9,11 @@
  * - Virtual LSD via rear wheel ERPM slip feedback
  * - Dynamic 2-DOF bicycle model target yaw rate with friction saturation
  * - Dynamic lateral load transfer base torque distribution
- * - Anti-windup PID yaw rate feedback controller
+ * - Anti-windup PID yaw rate feedback controller with actuator saturation feedback
+ * - Traction control system (TCS) slip ratio limiter per wheel
+ * - Asymmetric inverter fault protection (dual motor cut)
+ * - Bump-less mode transfer with slew-rate limiting and integrator washout
+ * - IMU kinematic plausibility monitoring (|a_y - v_x * r|)
  * - Sideslip angle (beta) observer and emergency spin stabilization
  * - Strict actuator clipping and net driver torque request preservation
  */
@@ -37,14 +41,17 @@ typedef enum {
 /**
  * @brief Diagnostic and status bitmask flags.
  */
-#define DIFF_FLAG_IMU_TIMEOUT       (1u << 0) /**< IMU telemetry stale or missing */
-#define DIFF_FLAG_STEER_TIMEOUT     (1u << 1) /**< Bosch LWS steering sensor stale or missing */
-#define DIFF_FLAG_INVERTER_TIMEOUT  (1u << 2) /**< Inverter telemetry stale */
-#define DIFF_FLAG_LSD_ACTIVE        (1u << 3) /**< Virtual LSD slip mitigation actively reducing torque */
-#define DIFF_FLAG_YAW_SATURATED     (1u << 4) /**< Target yaw rate saturated by tire friction limit */
-#define DIFF_FLAG_TORQUE_CLIPPED    (1u << 5) /**< Output torques clipped to motor/inverter envelope */
-#define DIFF_FLAG_EMERGENCY_SPIN    (1u << 6) /**< Side-slip angle exceeded critical limit -> spin recovery */
-#define DIFF_FLAG_FALLBACK_ACTIVE   (1u << 7) /**< Operating in degraded fallback mode */
+#define DIFF_FLAG_IMU_TIMEOUT         (1u << 0) /**< IMU telemetry stale or missing */
+#define DIFF_FLAG_STEER_TIMEOUT       (1u << 1) /**< Bosch LWS steering sensor stale or missing */
+#define DIFF_FLAG_INVERTER_TIMEOUT    (1u << 2) /**< Inverter telemetry stale */
+#define DIFF_FLAG_LSD_ACTIVE          (1u << 3) /**< Virtual LSD slip mitigation actively reducing torque */
+#define DIFF_FLAG_YAW_SATURATED       (1u << 4) /**< Target yaw rate saturated by tire friction limit */
+#define DIFF_FLAG_TORQUE_CLIPPED      (1u << 5) /**< Output torques clipped to motor/inverter envelope */
+#define DIFF_FLAG_EMERGENCY_SPIN      (1u << 6) /**< Side-slip angle exceeded critical limit -> spin recovery */
+#define DIFF_FLAG_FALLBACK_ACTIVE     (1u << 7) /**< Operating in degraded fallback mode */
+#define DIFF_FLAG_ASYMMETRIC_FAULT    (1u << 8) /**< Asymmetric inverter fault/timeout -> bilateral motor cut */
+#define DIFF_FLAG_TCS_ACTIVE          (1u << 9) /**< Traction control system actively limiting excess wheel slip */
+#define DIFF_FLAG_IMU_IMPLAUSIBLE     (1u << 10)/**< IMU kinematic plausibility mismatch |a_y - v_x*r| exceeded */
 
 /**
  * @brief Input signals to the Electronic Differential module.
@@ -60,6 +67,8 @@ typedef struct {
     float    left_wheel_speed_rads;   /**< Left rear wheel angular velocity omega_L [rad/s] */
     float    right_wheel_speed_rads;  /**< Right rear wheel angular velocity omega_R [rad/s] */
     bool     wheel_speeds_valid;      /**< True if wheel speed telemetry is valid */
+    bool     inv_left_fault;          /**< True if left inverter reported fault or timed out */
+    bool     inv_right_fault;         /**< True if right inverter reported fault or timed out */
     float    max_motor_torque_limit_nm;/**< External dynamic motor torque limit (e.g. power envelope) [Nm] */
     float    dt_s;                    /**< Timestep duration [s] (e.g. 0.010 for 10 ms) */
     uint32_t now_ms;                  /**< Current system timestamp [ms] */
@@ -74,12 +83,14 @@ typedef struct {
     float    current_left_apk;        /**< Commanded peak AC current to left DTI inverter [A] */
     float    current_right_apk;       /**< Commanded peak AC current to right DTI inverter [A] */
     DiffMode mode;                    /**< Currently active control mode */
-    float    road_wheel_angle_rad;    /**< Front road wheel steering angle delta = delta_sw / R_steer [rad] */
+    float    road_wheel_angle_rad;    /**< Front road wheel steering angle delta [rad] */
     float    target_yaw_rate_rads;    /**< Target yaw rate r_target [rad/s] (PartyMode only) */
     float    yaw_rate_error_rads;     /**< Yaw rate tracking error e_r [rad/s] */
     float    yaw_moment_nm;           /**< Commanded corrective yaw moment M_z [Nm] */
     float    delta_torque_nm;         /**< Differential torque bias applied across rear wheels [Nm] */
     float    side_slip_angle_rad;     /**< Estimated vehicle side-slip angle beta [rad] */
+    float    slip_ratio_left;         /**< Wheel slip ratio lambda_L */
+    float    slip_ratio_right;        /**< Wheel slip ratio lambda_R */
     uint16_t diag_flags;              /**< Diagnostic and warning bitmask (DIFF_FLAG_*) */
 } DiffOutputs;
 

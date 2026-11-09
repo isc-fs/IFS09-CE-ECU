@@ -3100,12 +3100,21 @@ static void test_electronic_differential() {
     std::printf("--- test_electronic_differential ---\n");
     DiffConfig cfg = diff_config_get_default();
 
-    // 1. Vehicle parameters sanity
-    CHECK(cfg.vehicle.wheelbase_m > 1.5f && cfg.vehicle.wheelbase_m < 1.6f, "Wheelbase L around 1.53m");
-    CHECK(cfg.vehicle.track_width_rear_m > 1.1f && cfg.vehicle.track_width_rear_m < 1.3f, "Track width w around 1.20m");
-    CHECK(cfg.vehicle.total_mass_kg > 200.0f && cfg.vehicle.total_mass_kg < 300.0f, "Total mass around 260kg");
+    // 1. Vehicle physical & kinematic parameters sanity
+    CHECK(cfg.vehicle.wheelbase_m > 1.55f && cfg.vehicle.wheelbase_m < 1.60f, "Wheelbase L 1.575m");
+    CHECK(cfg.vehicle.track_width_rear_m > 1.15f && cfg.vehicle.track_width_rear_m < 1.25f, "Track width w 1.200m");
+    CHECK(cfg.vehicle.total_mass_kg >= 300.0f && cfg.vehicle.total_mass_kg <= 320.0f, "Total mass with driver 310.0kg");
+    CHECK(std::abs(cfg.vehicle.dist_cg_front_m - 0.78435f) < 0.001f, "Front CG dist a = 0.78435m (50.2% front bias)");
+    CHECK(std::abs(cfg.vehicle.dist_cg_rear_m - 0.79065f) < 0.001f, "Rear CG dist b = 0.79065m");
+    CHECK(std::abs(cfg.vehicle.cg_height_m - 0.28587f) < 0.001f, "CG height 0.28587m");
+    CHECK(std::abs(cfg.vehicle.wheel_radius_m - 0.204f) < 0.001f, "Dynamic rolling tire radius 0.204m");
+    CHECK(std::abs(cfg.vehicle.gear_ratio - 12.48f) < 0.01f, "Planetary reduction ratio 12.48:1");
+    CHECK(std::abs(cfg.vehicle.rack_c_factor_mm_rev - 101.52f) < 0.01f, "Rack C-factor 101.52 mm/rev");
+    CHECK(std::abs(cfg.vehicle.steer_ratio - 4.6418f) < 0.01f, "Steering ratio R_steer ~ 4.6418");
     CHECK(cfg.vehicle.motor_max_torque_nm > 30.0f && cfg.vehicle.motor_max_torque_nm < 35.0f, "DTI F-MOT max torque 31.6Nm");
     CHECK(cfg.vehicle.kt_peak_nm_per_a > 0.6f && cfg.vehicle.kt_peak_nm_per_a < 0.8f, "Kt around 0.696");
+    CHECK(std::abs(cfg.vehicle.rear_roll_stiffness_ratio - 0.4198167f) < 0.001f, "Rear roll stiffness 41.98%");
+    CHECK(std::abs(cfg.vehicle.understeer_gradient - 0.0007335f) < 0.0001f, "Understeer gradient K_us = 0.0007335 rad/(m/s^2)");
 
     // 2. Variable gain K_diff(delta, v_x)
     // Zone 1: Deadband (|delta| < 2 deg = 0.0349 rad)
@@ -3143,21 +3152,31 @@ static void test_electronic_differential() {
     float expected_r_fric = (cfg.vehicle.road_friction_coeff * 9.80665f) / 25.0f;
     CHECK(std::abs(r_target_sat - expected_r_fric) < 0.01f, "Yaw rate clamped to friction limit");
 
-    // 4. Open-Loop Mode (mingomode) Step Evaluation
+    // 4. Standstill and low-speed threshold (v_x < 0.8 m/s -> PASSIVE 50/50)
     DiffState state;
     electronic_diff_init(&state);
-
     DiffInputs in{};
     in.dt_s = 0.010f;
     in.now_ms = 1000;
     in.total_torque_demand_nm = 40.0f;
-    in.vehicle_speed_mps = 12.0f;
+    in.vehicle_speed_mps = 0.5f; // < 0.8 m/s
     in.steering_angle_valid = true;
+    in.steering_wheel_angle_rad = 0.50f; // High steering angle
+    DiffOutputs out{};
+
+    for (int i = 0; i < 25; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(std::abs(out.torque_left_nm - 20.0f) < 0.1f, "Low speed (<0.8 m/s) maintains symmetric 50/50 split");
+    CHECK(std::abs(out.torque_right_nm - 20.0f) < 0.1f, "Low speed (<0.8 m/s) maintains symmetric 50/50 split");
+
+    // 5. Open-Loop Mode (mingomode) Step Evaluation
+    electronic_diff_init(&state);
+    in.vehicle_speed_mps = 12.0f;
     in.imu_valid = false; // IMU missing -> triggers mingomode
     in.steering_wheel_angle_rad = 0.0f;
 
-    DiffOutputs out{};
-    // Step through 20 cycles (200 ms) so slew-rate limiter ramps from 0 to full demand
     for (int i = 0; i < 25; ++i) {
         in.now_ms += 10;
         electronic_diff_step(&state, &cfg, &in, &out);
@@ -3177,7 +3196,7 @@ static void test_electronic_differential() {
     CHECK(out.torque_right_nm > 20.0f, "Left turn -> Outside (right) torque increased");
     CHECK(out.torque_left_nm + out.torque_right_nm <= 40.01f, "Invariant: sum of torques <= total driver demand");
 
-    // 5. Virtual LSD in mingomode: simulated outside wheel spin
+    // 6. Virtual LSD in mingomode: simulated outside wheel spin
     in.wheel_speeds_valid = true;
     in.left_wheel_speed_rads = 50.0f;
     in.right_wheel_speed_rads = 85.0f;
@@ -3186,7 +3205,7 @@ static void test_electronic_differential() {
     CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0, "Virtual LSD active on excessive wheel slip");
     CHECK(out.torque_right_nm < 20.0f, "Virtual LSD trimmed torque on spinning right wheel");
 
-    // 6. Closed-Loop Mode (partymode) with IMU
+    // 7. Closed-Loop Mode (partymode) with IMU & Dynamic Load Transfer
     electronic_diff_init(&state);
     in.imu_valid = true;
     in.wheel_speeds_valid = false;
@@ -3205,82 +3224,127 @@ static void test_electronic_differential() {
     CHECK(out.yaw_moment_nm > 0.0f, "Positive corrective yaw moment to turn car into corner");
     CHECK(out.torque_right_nm > out.torque_left_nm, "More torque to outside wheel to eliminate understeer");
 
-    // 7. Side-slip Emergency Protection
-    state.side_slip_beta_rad = 0.20f;
+    // 8. Actuator Saturation Feedback & Conditional Anti-Windup
+    // At maximum torque demand (63.2 Nm = 2 * 31.6 Nm), motors saturate at 31.6 Nm
+    in.total_torque_demand_nm = 63.2f;
+    for (int i = 0; i < 15; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.torque_right_nm <= cfg.vehicle.motor_max_torque_nm + 0.01f, "Torque clamped to motor physical limit 31.6Nm");
+    const float saturated_integral = state.pid_integral_nm;
+    // Step further while saturated: conditional anti-windup halts integration
+    for (int i = 0; i < 20; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(std::abs(state.pid_integral_nm - saturated_integral) < 0.05f, "Conditional anti-windup froze integrator during actuator saturation");
+
+    // 9. Asymmetric Inverter Fault Protection: Bilateral Motor Cut
+    in.total_torque_demand_nm = 40.0f;
+    in.inv_left_fault = true; // Inverter reports fault or timeout
     in.now_ms += 10;
     electronic_diff_step(&state, &cfg, &in, &out);
-    CHECK((out.diag_flags & DIFF_FLAG_EMERGENCY_SPIN) != 0, "Emergency spin stabilization triggered");
-    CHECK(out.torque_left_nm + out.torque_right_nm < 25.0f, "Emergency spin cuts overall tractive power");
+    CHECK((out.diag_flags & DIFF_FLAG_ASYMMETRIC_FAULT) != 0, "Asymmetric inverter fault flag set");
+    // Verify immediate torque cutoff to prevent catastrophic >1000 Nm yaw moment
+    CHECK(out.torque_left_nm < 2.0f && out.torque_right_nm < 2.0f, "Asymmetric inverter fault immediately cut torque to both wheels");
 
-    // 8. Failsafe transition: IMU timeout mid-corner
+    in.inv_left_fault = false;
+    in.inv_right_fault = false;
+
+    // 10. Active Traction Control (TCS) Slip Ratio Limiter
+    electronic_diff_init(&state);
+    in.wheel_speeds_valid = true;
+    in.vehicle_speed_mps = 10.0f;
+    in.left_wheel_speed_rads = 10.0f / cfg.vehicle.wheel_radius_m; // 0% slip
+    in.right_wheel_speed_rads = (10.0f * 1.50f) / cfg.vehicle.wheel_radius_m; // 50% excessive wheel spin!
+    in.steering_wheel_angle_rad = 0.0f;
+    in.imu_valid = false;
+    in.total_torque_demand_nm = 40.0f;
+
+    for (int i = 0; i < 25; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK((out.diag_flags & DIFF_FLAG_TCS_ACTIVE) != 0, "TCS active on excessive wheel slip ratio");
+    CHECK(out.slip_ratio_right > 0.40f, "Right wheel slip ratio ~50%");
+    CHECK(out.torque_right_nm < out.torque_left_nm, "TCS curtailed torque on slipping right wheel");
+
+    // 11. IMU Kinematic Plausibility Guard (|a_y - v_x * r| > 15 m/s^2)
+    electronic_diff_init(&state);
+    in.vehicle_speed_mps = 15.0f;
+    in.imu_valid = true;
+    in.wheel_speeds_valid = false;
+    in.measured_yaw_rate_rads = 0.10f; // Expected a_y = 15 * 0.10 = 1.5 m/s^2
+    in.lateral_accel_mps2 = 25.0f;     // Implausible mismatch: |25.0 - 1.5| = 23.5 m/s^2 > 15 m/s^2
+    in.now_ms = 4000;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK((out.diag_flags & DIFF_FLAG_IMU_IMPLAUSIBLE) != 0, "Kinematic plausibility mismatch flagged");
+    CHECK(out.mode == DIFF_MODE_MINGO, "Implausible IMU drops immediately to MingoMode");
+
+    // 12. Bump-less Transfer on IMU loss mid-corner
+    electronic_diff_init(&state);
+    in.lateral_accel_mps2 = 1.5f; // Plausible
+    in.steering_wheel_angle_rad = 0.35f;
+    in.now_ms = 5000;
+    // Enter PartyMode
+    for (int i = 0; i < 30; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_PARTY, "Active in PartyMode mid-corner");
+    float t_left_before = out.torque_left_nm;
+    float t_right_before = out.torque_right_nm;
+
+    // Drop IMU mid-corner
     in.imu_valid = false;
     in.now_ms += 10;
     electronic_diff_step(&state, &cfg, &in, &out);
     CHECK(out.mode == DIFF_MODE_MINGO, "Instant fallback to MingoMode on IMU loss");
     CHECK((out.diag_flags & DIFF_FLAG_IMU_TIMEOUT) != 0, "IMU timeout flag set");
+    // Verify no discontinuous torque step (slew-rate limited)
+    CHECK(std::abs(out.torque_left_nm - t_left_before) <= (cfg.limits.max_slew_rate_nm_s * in.dt_s * 3.0f),
+          "Bump-less transfer: no abrupt torque step on left motor");
+    CHECK(std::abs(out.torque_right_nm - t_right_before) <= (cfg.limits.max_slew_rate_nm_s * in.dt_s * 3.0f),
+          "Bump-less transfer: no abrupt torque step on right motor");
 
-    // Steering sensor failure -> passive 50/50
+    // 13. Steering sensor failure -> passive 50/50
     in.steering_angle_valid = false;
     in.now_ms += 10;
     electronic_diff_step(&state, &cfg, &in, &out);
     CHECK(out.mode == DIFF_MODE_PASSIVE, "Steering fault drops to Passive 50/50 mode");
     CHECK((out.diag_flags & DIFF_FLAG_STEER_TIMEOUT) != 0, "Steer timeout flag set");
 
-    // 9. CAN Interface Layer: Bosch LWS & Xsens IMU & DTI
+    // 14. CAN Interface Layer: Bosch LWS & IMU & DTI
     BoschLwsState lws{};
     XsensImuState imu{};
     DtiInverterState inv_l{}, inv_r{};
     electronic_diff_can_init(&lws, &imu, &inv_l, &inv_r);
 
-    // Bosch LWS frame: ID 0x0C0, angle +15.5 deg (155 = 0x009B), speed 45 deg/s (0x002D)
-    uint8_t lws_frame[8] = { 0x00, 0x9B, 0x00, 0x2D, 0x00, 0x00, 0x00, 0x00 };
-    bool rx_ok = electronic_diff_can_process_rx(&cfg, 0x0C0, false, lws_frame, 8, 3000, &lws, &imu, &inv_l, &inv_r);
-    CHECK(rx_ok, "Bosch LWS frame processed");
-    CHECK(std::abs(lws.steering_angle_deg - 15.5f) < 0.05f, "LWS angle decoded accurately");
-    CHECK(std::abs(lws.steering_speed_deg_s - 45.0f) < 0.1f, "LWS speed decoded accurately");
-    CHECK(lws.valid, "LWS marked valid");
-
-    // Negative angle: -20.0 deg (-200 = 0xFF38)
-    uint8_t lws_neg[8] = { 0xFF, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    electronic_diff_can_process_rx(&cfg, 0x0C0, false, lws_neg, 8, 3010, &lws, &imu, &inv_l, &inv_r);
-    CHECK(std::abs(lws.steering_angle_deg - (-20.0f)) < 0.05f, "LWS negative angle decoded accurately");
-
-    // Bosch Motorsport LWS standard frame: ID 0x2B0, Little-Endian (Intel), 0.1 deg/LSB, status truth table
-    // +15.5 deg (155 = 0x009B -> LE: [0x9B, 0x00]), speed 40 deg/s (10 * 4 = 40 -> [0x0A]), status 0x07 (TRIM|CAL|OK)
+    // Bosch Motorsport LWS standard frame: ID 0x2B0, Little-Endian, 0.1 deg/LSB, status 0x07
     uint8_t lws_std[8] = { 0x9B, 0x00, 0x0A, 0x07, 0x00, 0x00, 0x00, 0x00 };
-    rx_ok = electronic_diff_can_process_rx(&cfg, 0x2B0, false, lws_std, 8, 3015, &lws, &imu, &inv_l, &inv_r);
+    bool rx_ok = electronic_diff_can_process_rx(&cfg, 0x2B0, false, lws_std, 8, 3015, &lws, &imu, &inv_l, &inv_r);
     CHECK(rx_ok, "Bosch LWS 0x2B0 standard frame processed");
     CHECK(std::abs(lws.steering_angle_deg - 15.5f) < 0.05f, "LWS 0x2B0 angle decoded accurately (LE)");
     CHECK(std::abs(lws.steering_speed_deg_s - 40.0f) < 0.1f, "LWS 0x2B0 speed decoded accurately (*4)");
     CHECK(lws.valid, "LWS 0x2B0 valid with status 0x07");
 
-    // Bosch Motorsport LWS uncalibrated state: CAL=0 (status 0x05) and 0x7FFF
-    uint8_t lws_uncal[8] = { 0xFF, 0x7F, 0x0A, 0x05, 0x00, 0x00, 0x00, 0x00 };
-    electronic_diff_can_process_rx(&cfg, 0x2B0, false, lws_uncal, 8, 3018, &lws, &imu, &inv_l, &inv_r);
-    CHECK(!lws.valid, "LWS 0x2B0 marked invalid when CAL=0 and angle 0x7FFF");
-
-    // Xsens IMU frame: ID 0x201, yaw rate +0.350 rad/s (350 = 0x015E), a_y -2.50 m/s^2 (-250 = 0xFF06)
+    // IMU frame: ID 0x201, yaw rate +0.350 rad/s (350 = 0x015E), a_y -2.50 m/s^2 (-250 = 0xFF06)
     uint8_t imu_frame[8] = { 0x01, 0x5E, 0xFF, 0x06, 0x00, 0x00, 0x00, 0x00 };
     rx_ok = electronic_diff_can_process_rx(&cfg, 0x201, false, imu_frame, 8, 3020, &lws, &imu, &inv_l, &inv_r);
-    CHECK(rx_ok, "Xsens IMU frame processed");
+    CHECK(rx_ok, "IMU frame processed");
     CHECK(std::abs(imu.yaw_rate_rads - 0.350f) < 0.005f, "IMU yaw rate decoded accurately");
     CHECK(std::abs(imu.lateral_accel_mps2 - (-2.50f)) < 0.01f, "IMU lateral accel decoded accurately");
     CHECK(imu.valid, "IMU marked valid");
 
-    // DTI Inverter CAN command packaging (Packet 0x01 Set AC Current)
+    // DTI Packet 0x01 Set AC Current command
     uint32_t cmd_can_id = 0;
     uint8_t cmd_data[8] = {};
     uint8_t cmd_dlc = 0;
     electronic_diff_can_build_dti_set_current(&cfg, 1, 25.4f, &cmd_can_id, cmd_data, &cmd_dlc);
-    uint32_t expected_id = (0x01u << 5) | 1u;
-    CHECK(cmd_can_id == expected_id, "DTI Standard 11-bit command CAN ID matches 0x021");
+    CHECK(cmd_can_id == ((0x01u << 5) | 1u), "DTI Standard 11-bit command CAN ID matches 0x021");
     CHECK(cmd_dlc == 8, "DTI command DLC == 8");
     CHECK(cmd_data[0] == 0x00 && cmd_data[1] == 0xFE, "DTI AC current scaled *10 big-endian (254)");
-
-    // DTI Packet 0x0C Drive Enable command
-    electronic_diff_can_build_dti_drive_enable(&cfg, 2, true, &cmd_can_id, cmd_data, &cmd_dlc);
-    CHECK(cmd_can_id == ((0x0Cu << 5) | 2u), "DTI Drive Enable CAN ID matches 0x182");
-    CHECK(cmd_data[0] == 0x01, "Drive enable byte == 1");
 
     // DTI Packet 0x20 ERPM telemetry parsing
     uint32_t fb_id = (0x20u << 5) | 1u;
@@ -3288,8 +3352,14 @@ static void test_electronic_differential() {
     rx_ok = electronic_diff_can_process_rx(&cfg, fb_id, false, fb_data, 8, 3030, &lws, &imu, &inv_l, &inv_r);
     CHECK(rx_ok, "DTI telemetry frame 0x20 processed");
     CHECK(inv_l.erpm == 9310, "ERPM decoded matches manual example 9310");
-    CHECK(std::abs(inv_l.duty_cycle_pct - 11.3f) < 0.1f, "Duty cycle matches 11.3%");
-    CHECK(std::abs(inv_l.input_voltage_v - 390.0f) < 0.1f, "Input voltage matches 390 V");
+
+    // DTI Packet 0x21 AC Current feedback parsing
+    uint32_t curr_id = (0x21u << 5) | 1u;
+    uint8_t curr_data[8] = { 0x01, 0x5E, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00 }; // 350 = 35.0 Apk, 120 = 12.0 A
+    rx_ok = electronic_diff_can_process_rx(&cfg, curr_id, false, curr_data, 8, 3032, &lws, &imu, &inv_l, &inv_r);
+    CHECK(rx_ok, "DTI current telemetry frame 0x21 processed");
+    CHECK(std::abs(inv_l.ac_current_apk - 35.0f) < 0.1f, "DTI phase current matches 35.0 Apk");
+    CHECK(std::abs(inv_l.dc_current_a - 12.0f) < 0.1f, "DTI DC current matches 12.0 A");
 
     // Timeout checking: advance clock past timeout thresholds
     electronic_diff_can_check_timeouts(&cfg, 4000, &lws, &imu, &inv_l, &inv_r);

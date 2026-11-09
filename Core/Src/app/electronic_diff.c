@@ -133,6 +133,8 @@ void electronic_diff_step(DiffState* state,
     out->yaw_moment_nm        = 0.0f;
     out->delta_torque_nm      = 0.0f;
     out->side_slip_angle_rad  = state->side_slip_beta_rad;
+    out->slip_ratio_left      = 0.0f;
+    out->slip_ratio_right     = 0.0f;
     out->diag_flags           = 0;
 
     const float dt = (in->dt_s > 1e-4f && in->dt_s < 0.5f) ? in->dt_s : 0.010f;
@@ -142,12 +144,9 @@ void electronic_diff_step(DiffState* state,
     if (t_total < 0.0f) t_total = 0.0f;
 
     /* 1. Steering angle calculation and safety check.
-     *
      * THE STEERING DROPOUT TRAP:
-     * Never freeze or hold the last valid steering angle on sensor timeout. If
-     * the sensor drops out mid-corner and we held the angle, the ECU would blast
-     * a 15 Nm torque-vectoring bias onto the subsequent straight! When LWS
-     * validity drops, fall back to PASSIVE 50/50 immediately. */
+     * Never freeze or hold the last valid steering angle on sensor timeout.
+     * When LWS validity drops, fall back to PASSIVE 50/50 immediately. */
     if (!in->steering_angle_valid) {
         out->diag_flags |= DIFF_FLAG_STEER_TIMEOUT;
         state->mode = DIFF_MODE_PASSIVE;
@@ -158,19 +157,28 @@ void electronic_diff_step(DiffState* state,
         : 0.0f;
     out->road_wheel_angle_rad = road_wheel_angle;
 
-    /* 2. Operating Mode Decision & Fallback Logic.
-     *
-     * DEBOUNCED TRANSITIONS PREVENT CHATTER:
-     * When IMU packet timing jitters near the 50 ms timeout threshold, switching
-     * modes every tick would twitch the rear axle mid-corner. Fallback to MingoMode
-     * (open loop) is INSTANTANEOUS for safety; returning to PartyMode (closed loop)
-     * is DEBOUNCED for 150 ms of continuous, uninterrupted healthy packets. */
+    /* 2. Sensor Fusion & Plausibility Guards:
+     * Kinematic plausibility check on IMU: a_y ~ v_x * r in steady-state.
+     * If discrepancy exceeds imu_plausibility_diff_mps2, treat IMU as corrupted. */
+    bool imu_plausible = in->imu_valid;
+    if (imu_plausible && fabsf(in->vehicle_speed_mps) > 2.0f) {
+        const float ay_expected = in->vehicle_speed_mps * in->measured_yaw_rate_rads;
+        const float ay_diff = fabsf(in->lateral_accel_mps2 - ay_expected);
+        if (ay_diff > config->limits.imu_plausibility_diff_mps2) {
+            imu_plausible = false;
+            out->diag_flags |= DIFF_FLAG_IMU_IMPLAUSIBLE;
+        }
+    }
+
+    /* 3. Operating Mode Decision & Bump-less Debouncing:
+     * Switching from PartyMode (closed loop) to MingoMode (open loop) is INSTANT.
+     * Returning to PartyMode is DEBOUNCED for mode_debounce_ms (150 ms) to avoid chatter. */
     if (in->steering_angle_valid) {
-        if (in->imu_valid) {
+        if (in->imu_valid && imu_plausible) {
             if (state->mode == DIFF_MODE_PARTY) {
                 /* Maintain closed-loop mode */
             } else {
-                /* Debounce transition from degraded/passive to party mode */
+                /* Debounce transition to PartyMode */
                 if (state->imu_healthy_start_ms == 0) {
                     state->imu_healthy_start_ms = in->now_ms;
                 }
@@ -182,35 +190,37 @@ void electronic_diff_step(DiffState* state,
                 }
             }
         } else {
-            /* IMU lost or stale -> instant glitch-free fallback to mingomode */
+            /* IMU lost, stale, or implausible -> instant bumpless fallback to mingomode */
             state->imu_healthy_start_ms = 0;
             state->mode = DIFF_MODE_MINGO;
-            out->diag_flags |= (DIFF_FLAG_IMU_TIMEOUT | DIFF_FLAG_FALLBACK_ACTIVE);
+            out->diag_flags |= DIFF_FLAG_FALLBACK_ACTIVE;
+            if (!in->imu_valid) {
+                out->diag_flags |= DIFF_FLAG_IMU_TIMEOUT;
+            }
         }
     }
     out->mode = state->mode;
 
-    /* Intermediate wheel torque allocations before arbitration */
+    /* Intermediate raw wheel torques */
     float t_left_raw = 0.0f;
     float t_right_raw = 0.0f;
 
-    /* 3. Compute Torque Distribution According to Mode */
+    /* Cap to maximum allowable motor torque (physical or power-envelope) */
+    float motor_cap = config->vehicle.motor_max_torque_nm;
+    if (in->max_motor_torque_limit_nm > 0.1f && in->max_motor_torque_limit_nm < motor_cap) {
+        motor_cap = in->max_motor_torque_limit_nm;
+    }
+
+    /* 4. Compute Torque Distribution According to Mode */
     if (state->mode == DIFF_MODE_PASSIVE || fabsf(in->vehicle_speed_mps) < config->limits.min_velocity_mps) {
-        /* Symmetric 50/50 split */
+        /* Mode 0: Symmetric 50/50 split */
         const float t_base = t_total * 0.5f;
         t_left_raw = t_base;
         t_right_raw = t_base;
         state->pid_integral_nm = 0.0f;
     } else if (state->mode == DIFF_MODE_MINGO) {
-        /* Mode 1: Open-loop kinematic Ackermann feedforward.
-         *
-         * KINEMATIC SPLIT:
-         * In a turn of radius R = L / tan(delta), the inside wheel travels an arc
-         * of (R - w/2) while the outside travels (R + w/2).
-         * Transferring Delta_T = T_base * K_diff * (w / 2L) * tan(delta) from inside
-         * to outside creates an assist yaw moment proportional to steering input.
-         * Sign convention: delta > 0 (left turn) -> Delta_T > 0 -> subtract from left
-         * (inside), add to right (outside). Total torque is preserved exactly. */
+        /* Mode 1: Open-loop kinematic Ackermann feedforward + Virtual LSD.
+         * Wash out PID integrator to ensure bump-less return to PartyMode */
         state->pid_integral_nm = 0.0f;
         const float t_base = t_total * 0.5f;
 
@@ -218,14 +228,14 @@ void electronic_diff_step(DiffState* state,
         const float tan_delta = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
         float delta_t = t_base * k_diff * (config->vehicle.track_width_rear_m / (2.0f * config->vehicle.wheelbase_m)) * tan_delta;
 
-        /* Hard clamp to maximum allowable mechanical bias (preventing inverter overcurrent) */
+        /* Hard clamp to maximum allowable mechanical bias */
         delta_t = clampf(delta_t, -config->limits.max_delta_torque_nm, config->limits.max_delta_torque_nm);
         out->delta_torque_nm = delta_t;
 
         t_left_raw  = t_base - delta_t;
         t_right_raw = t_base + delta_t;
 
-        /* Virtual LSD with ERPM telemetry feedback (Section 3.5) */
+        /* Virtual LSD with ERPM telemetry feedback */
         if (in->wheel_speeds_valid) {
             const float omega_mean = (in->left_wheel_speed_rads + in->right_wheel_speed_rads) * 0.5f;
             if (omega_mean > 5.0f) {
@@ -240,22 +250,15 @@ void electronic_diff_step(DiffState* state,
                     const float trim = excess_slip * config->limits.lsd_k_slip;
 
                     if (slip_diff > 0.0f) {
-                        /* Right wheel spinning faster than expected -> trim right */
                         t_right_raw -= trim;
                     } else {
-                        /* Left wheel spinning faster than expected -> trim left */
                         t_left_raw -= trim;
                     }
                 }
             }
         }
     } else if (state->mode == DIFF_MODE_PARTY) {
-        /* Mode 2: Closed-loop dynamic yaw rate feedback (Full Torque Vectoring).
-         *
-         * 2-DOF BICYCLE TARGET WITH TIRE SATURATION:
-         * Predicts steady-state yaw rate: r = [v_x / (L + K_us*v_x^2)] * delta.
-         * Road friction ceiling: road tires cannot support yaw rate past mu*g / v_x.
-         * Capping target prevents commanding impossible yaw acceleration. */
+        /* Mode 2: Closed-loop dynamic yaw rate feedback (Full Torque Vectoring). */
         bool yaw_saturated = false;
         const float r_target = electronic_diff_calc_target_yaw_rate(config, road_wheel_angle, in->vehicle_speed_mps, &yaw_saturated);
         out->target_yaw_rate_rads = r_target;
@@ -263,13 +266,9 @@ void electronic_diff_step(DiffState* state,
             out->diag_flags |= DIFF_FLAG_YAW_SATURATED;
         }
 
-        /* 3.1 Lateral load transfer (Delta F_z)
-         *
-         * MAXIMIZING GRIP BEFORE TORQUE VECTORING:
-         * Centrifugal acceleration a_y transfers weight from inner to outer tire.
-         * Since peak longitudinal traction is F_x,max = mu * F_z, distributing
-         * baseline torque in proportion to normal load (F_z,left vs F_z,right)
-         * puts the work on the tire that actually has grip, delaying wheel spin. */
+        /* 4.1 Lateral load transfer (Delta F_z)
+         * F_z0,tras = m * g * (a / L)
+         * Delta_F_z = (m * a_y * h_cg / w) * K_roll,tras */
         const float fz0_rear = config->vehicle.total_mass_kg * GRAVITY_MPS2 *
                                (config->vehicle.dist_cg_front_m / config->vehicle.wheelbase_m);
         const float delta_fz = (config->vehicle.total_mass_kg * in->lateral_accel_mps2 * config->vehicle.cg_height_m /
@@ -285,17 +284,25 @@ void electronic_diff_step(DiffState* state,
         const float t_base_left  = t_total * (fz_left / fz0_rear);
         const float t_base_right = t_total * (fz_right / fz0_rear);
 
-        /* 3.2 Yaw rate error and PID controller */
+        /* 4.2 Yaw rate error and PID controller with actuator saturation feedback */
         const float e_r = r_target - in->measured_yaw_rate_rads;
         out->yaw_rate_error_rads = e_r;
 
         /* Proportional term */
         const float p_term = config->pid.kp * e_r;
 
-        /* Integral term with anti-windup */
+        /* Integral term with conditional anti-windup clamping:
+         * Halt integration if previous motor commands saturated in the direction of error */
         if (t_total > 1.0f) {
-            state->pid_integral_nm += config->pid.ki * e_r * dt;
-            state->pid_integral_nm = clampf(state->pid_integral_nm, -config->pid.i_max_nm, config->pid.i_max_nm);
+            const bool saturated_high = (state->last_torque_left_nm >= motor_cap && e_r < 0.0f) ||
+                                        (state->last_torque_right_nm >= motor_cap && e_r > 0.0f);
+            const bool saturated_low  = (state->last_torque_left_nm <= 0.0f && e_r > 0.0f) ||
+                                        (state->last_torque_right_nm <= 0.0f && e_r < 0.0f);
+
+            if (!saturated_high && !saturated_low) {
+                state->pid_integral_nm += config->pid.ki * e_r * dt;
+                state->pid_integral_nm = clampf(state->pid_integral_nm, -config->pid.i_max_nm, config->pid.i_max_nm);
+            }
         } else {
             /* Reset integral when driver lifts off accelerator */
             state->pid_integral_nm *= 0.90f;
@@ -323,7 +330,7 @@ void electronic_diff_step(DiffState* state,
         t_left_raw  = t_base_left - delta_t_tv;
         t_right_raw = t_base_right + delta_t_tv;
 
-        /* 3.3 Vehicle side-slip angle (beta) observer & emergency spin protection */
+        /* 4.3 Vehicle side-slip angle (beta) observer & emergency spin protection */
         if (fabsf(in->vehicle_speed_mps) > 1.5f) {
             const float d_beta = (in->lateral_accel_mps2 / in->vehicle_speed_mps) - in->measured_yaw_rate_rads;
             /* Washout leakage prevents long-term integration drift */
@@ -348,16 +355,46 @@ void electronic_diff_step(DiffState* state,
         }
     }
 
-    /* 4. Actuator Envelope & Net Driver Torque Preservation */
-    /* Ensure no negative torque during drive request (unless regen requested) */
+    /* 5. Active Traction Control (TCS) Slip Ratio Limiter */
+    if (in->wheel_speeds_valid && fabsf(in->vehicle_speed_mps) > 0.5f) {
+        const float v_ref = (fabsf(in->vehicle_speed_mps) > 1.0f) ? fabsf(in->vehicle_speed_mps) : 1.0f;
+        const float v_wheel_l = in->left_wheel_speed_rads * config->vehicle.wheel_radius_m;
+        const float v_wheel_r = in->right_wheel_speed_rads * config->vehicle.wheel_radius_m;
+
+        const float slip_l = (v_wheel_l - v_ref) / v_ref;
+        const float slip_r = (v_wheel_r - v_ref) / v_ref;
+
+        out->slip_ratio_left  = slip_l;
+        out->slip_ratio_right = slip_r;
+
+        const float slip_limit = config->limits.tcs_slip_threshold;
+        if (slip_l > slip_limit) {
+            out->diag_flags |= DIFF_FLAG_TCS_ACTIVE;
+            const float excess = slip_l - slip_limit;
+            const float cut_factor = clampf(1.0f - excess * config->limits.tcs_k_slip, 0.0f, 1.0f);
+            t_left_raw *= cut_factor;
+        }
+        if (slip_r > slip_limit) {
+            out->diag_flags |= DIFF_FLAG_TCS_ACTIVE;
+            const float excess = slip_r - slip_limit;
+            const float cut_factor = clampf(1.0f - excess * config->limits.tcs_k_slip, 0.0f, 1.0f);
+            t_right_raw *= cut_factor;
+        }
+    }
+
+    /* 6. Asymmetric Inverter Fault Protection:
+     * If either inverter trips, times out, or reports a fault, immediately cut BOTH
+     * motors symmetrically to zero to prevent catastrophic uncommanded yaw moments. */
+    if (in->inv_left_fault || in->inv_right_fault) {
+        t_left_raw  = 0.0f;
+        t_right_raw = 0.0f;
+        state->pid_integral_nm = 0.0f;
+        out->diag_flags |= DIFF_FLAG_ASYMMETRIC_FAULT;
+    }
+
+    /* 7. Actuator Envelope & Net Driver Torque Preservation */
     if (t_left_raw < 0.0f)  t_left_raw = 0.0f;
     if (t_right_raw < 0.0f) t_right_raw = 0.0f;
-
-    /* Cap to maximum allowable motor torque (motor physical max or power limit) */
-    float motor_cap = config->vehicle.motor_max_torque_nm;
-    if (in->max_motor_torque_limit_nm > 0.1f && in->max_motor_torque_limit_nm < motor_cap) {
-        motor_cap = in->max_motor_torque_limit_nm;
-    }
 
     if (t_left_raw > motor_cap || t_right_raw > motor_cap) {
         out->diag_flags |= DIFF_FLAG_TORQUE_CLIPPED;
@@ -373,7 +410,8 @@ void electronic_diff_step(DiffState* state,
         t_right_raw *= scale;
     }
 
-    /* 5. Slew-rate limiting: rapid reduction allowed for safety, smooth ramping for increase */
+    /* 8. Slew-rate limiting for bump-less transitions:
+     * Prevents abrupt torque steps during mode degradation or driver transitions */
     const float max_step_up = config->limits.max_slew_rate_nm_s * dt;
     const float max_step_down = (out->diag_flags & DIFF_FLAG_EMERGENCY_SPIN)
         ? (config->limits.max_slew_rate_nm_s * dt * 8.0f)
@@ -388,7 +426,7 @@ void electronic_diff_step(DiffState* state,
     state->last_torque_left_nm  = out->torque_left_nm;
     state->last_torque_right_nm = out->torque_right_nm;
 
-    /* 6. Convert torque to peak AC current for DTI Inverter: I_pk = T / K_t,pk */
+    /* 9. Convert torque to peak AC current for DTI Inverter: I_pk = T / K_t,pk */
     if (config->vehicle.kt_peak_nm_per_a > 1e-4f) {
         out->current_left_apk  = out->torque_left_nm / config->vehicle.kt_peak_nm_per_a;
         out->current_right_apk = out->torque_right_nm / config->vehicle.kt_peak_nm_per_a;

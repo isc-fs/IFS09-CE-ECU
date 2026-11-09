@@ -224,6 +224,17 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
             target_inv->valid = true;
             target_inv->last_rx_timestamp_ms = now_ms;
             return true;
+        } else if (pkt_id == cfg->can.dti_pkt_telemetry_current && dlc >= 4) {
+            /* Packet 0x21: AC Current (0-1), DC Current (2-3) */
+            const int16_t raw_ac = read_be16_signed(&data[0]);
+            target_inv->ac_current_apk = ((float)raw_ac) * 0.1f;
+
+            const int16_t raw_dc = read_be16_signed(&data[2]);
+            target_inv->dc_current_a = ((float)raw_dc) * 0.1f;
+
+            target_inv->valid = true;
+            target_inv->last_rx_timestamp_ms = now_ms;
+            return true;
         } else if (pkt_id == cfg->can.dti_pkt_telemetry_temp && dlc >= 5) {
             /* Packet 0x22: CTLR Temp (0-1), Motor Temp (2-3), Fault Code (4) */
             const int16_t raw_t_ctrl = read_be16_signed(&data[0]);

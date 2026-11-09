@@ -58,6 +58,8 @@ typedef struct {
     float    wheel_speed_rads;         /**< Wheel angular velocity [rad/s] = (mech_rpm * 2*pi/60) / G */
     float    duty_cycle_pct;           /**< Controller duty cycle [-100.0% to +100.0%] */
     float    input_voltage_v;          /**< Inverter DC-link input voltage [V] */
+    float    ac_current_apk;           /**< Inverter AC phase current [Apk] (Packet 0x21) */
+    float    dc_current_a;             /**< Inverter DC bus current [A] (Packet 0x21) */
     float    controller_temp_c;        /**< Inverter semiconductor temperature [degC] */
     float    motor_temp_c;             /**< Motor temperature [degC] */
     uint8_t  fault_code;               /**< Inverter fault code (0 = NO FAULTS) */

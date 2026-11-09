@@ -86,6 +86,9 @@ extern "C" void ecu_can_rx_task_run(void *argument) {
             const bool en = (magic == config::PitDiagEnableMagic);
             g_pit_diag_enabled = en ? 1u : 0u;
             can_tx_post(PitDiag::build_ack(en));
+            if (f.dlc >= 5u) {
+                g_hil_force_start = (f.data[4] != 0u) ? 1u : 0u;
+            }
             continue;
         }
 

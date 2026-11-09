@@ -389,6 +389,12 @@ extern "C" void ecu_control_task_run(void *argument) {
         diff_in.measured_yaw_rate_rads   = veh.diff_imu.yaw_rate_rads;
         diff_in.lateral_accel_mps2       = veh.diff_imu.lateral_accel_mps2;
         diff_in.imu_valid                = veh.diff_imu.valid;
+        const bool left_fault = (veh.diff_inv_left.fault_code != 0u) ||
+            (veh.diff_inv_left.last_rx_timestamp_ms > 0u && !veh.diff_inv_left.valid);
+        const bool right_fault = (veh.diff_inv_right.fault_code != 0u) ||
+            (veh.diff_inv_right.last_rx_timestamp_ms > 0u && !veh.diff_inv_right.valid);
+        diff_in.inv_left_fault           = left_fault;
+        diff_in.inv_right_fault          = right_fault;
         diff_in.max_motor_torque_limit_nm= diff_cfg.vehicle.motor_max_torque_nm;
         diff_in.dt_s                     = 0.010f;
         diff_in.now_ms                   = now;
