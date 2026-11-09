@@ -3247,6 +3247,7 @@ static void test_electronic_differential() {
     // 7. Closed-Loop Mode (partymode) with IMU & Dynamic Load Transfer
     electronic_diff_init(&state);
     in.imu_valid = true;
+    in.is_dv_mode = true;
     in.wheel_speeds_valid = false;
     in.steering_wheel_angle_rad = 0.40f;
     in.measured_yaw_rate_rads = 0.10f;
@@ -3313,6 +3314,7 @@ static void test_electronic_differential() {
     electronic_diff_init(&state);
     in.vehicle_speed_mps = 15.0f;
     in.imu_valid = true;
+    in.is_dv_mode = true;
     in.wheel_speeds_valid = false;
     in.measured_yaw_rate_rads = 0.10f; // Expected a_y = 15 * 0.10 = 1.5 m/s^2
     in.lateral_accel_mps2 = 25.0f;     // Implausible mismatch: |25.0 - 1.5| = 23.5 m/s^2 > 15 m/s^2
@@ -3325,6 +3327,7 @@ static void test_electronic_differential() {
     electronic_diff_init(&state);
     in.lateral_accel_mps2 = 1.5f; // Plausible
     in.steering_wheel_angle_rad = 0.35f;
+    in.is_dv_mode = true;
     in.now_ms = 5000;
     // Enter PartyMode
     for (int i = 0; i < 30; ++i) {
@@ -3405,6 +3408,36 @@ static void test_electronic_differential() {
     CHECK(!lws.valid, "LWS timed out past steer_timeout_ms");
     CHECK(!imu.valid, "IMU timed out past imu_timeout_ms");
     CHECK(!inv_l.valid, "Inverter timed out past inverter_timeout_ms");
+
+    // 15. Manual Driving Mode restricts to MingoMode (TV disabled) with steering rate feedforward
+    electronic_diff_init(&state);
+    in.is_dv_mode = false; // Seated human driver
+    in.imu_valid = true;   // Healthy IMU available
+    in.wheel_speeds_valid = true;
+    in.vehicle_speed_mps = 12.0f;
+    in.total_torque_demand_nm = 40.0f;
+    in.steering_angle_valid = true;
+    in.steering_wheel_angle_rad = 0.20f;
+    in.steering_wheel_speed_rad_s = 0.0f;
+    in.now_ms = 6000;
+
+    for (int i = 0; i < 30; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    // In manual mode, closed-loop TV must NOT activate even if IMU is healthy
+    CHECK(out.mode == DIFF_MODE_MINGO, "Manual driving mode remains in MingoMode (open loop) even with healthy IMU");
+    CHECK(std::abs(out.delta_torque_speed_nm) < 0.01f, "Static turn has zero steering speed feedforward");
+    const float t_right_static = out.torque_right_nm;
+
+    // Driver rapidly turns steering wheel further to the left (positive angular velocity)
+    in.steering_wheel_speed_rad_s = 2.5f; // ~143 deg/s
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK(out.delta_torque_speed_nm > 0.5f, "Positive steering angular velocity produces dynamic feedforward torque bias");
+    CHECK(out.torque_right_nm > t_right_static, "Dynamic feedforward increases torque to outside right wheel during turn-in transient");
+    CHECK(out.delta_torque_speed_nm <= cfg.vehicle.max_steer_speed_delta_nm + 0.01f, "Steering speed bias clamped to max_steer_speed_delta_nm");
+    CHECK(out.torque_left_nm + out.torque_right_nm <= 40.01f, "Net torque invariant preserved with feedforward");
 }
 
 static void run_all() {

@@ -153,6 +153,21 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
             const bool angle_valid = (raw_angle != 0x7FFF);
 
             lws->valid = ok && cal && trim && angle_valid;
+            if (lws->valid) {
+                const float angle_delta = lws->steering_angle_rad - lws->last_steering_angle_rad;
+                float dir = 0.0f;
+                if (angle_delta > 1e-4f) {
+                    dir = 1.0f;
+                } else if (angle_delta < -1e-4f) {
+                    dir = -1.0f;
+                } else if (fabsf(lws->steering_angle_rad) > 1e-3f) {
+                    dir = (lws->steering_angle_rad >= 0.0f) ? 1.0f : -1.0f;
+                }
+                lws->steering_speed_rad_s = dir * (lws->steering_speed_deg_s * DEG_TO_RAD);
+                lws->last_steering_angle_rad = lws->steering_angle_rad;
+            } else {
+                lws->steering_speed_rad_s = 0.0f;
+            }
             lws->last_rx_timestamp_ms = now_ms;
             return true;
         } else {
@@ -166,6 +181,8 @@ bool electronic_diff_can_process_rx(const DiffConfig* cfg,
 
             lws->status_code = (dlc >= 5) ? data[4] : 0x00;
             lws->valid = true;
+            lws->steering_speed_rad_s = lws->steering_speed_deg_s * DEG_TO_RAD;
+            lws->last_steering_angle_rad = lws->steering_angle_rad;
             lws->last_rx_timestamp_ms = now_ms;
             return true;
         }

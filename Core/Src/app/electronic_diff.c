@@ -132,6 +132,7 @@ void electronic_diff_step(DiffState* state,
     out->yaw_rate_error_rads  = 0.0f;
     out->yaw_moment_nm        = 0.0f;
     out->delta_torque_nm      = 0.0f;
+    out->delta_torque_speed_nm= 0.0f;
     out->side_slip_angle_rad  = state->side_slip_beta_rad;
     out->slip_ratio_left      = 0.0f;
     out->slip_ratio_right     = 0.0f;
@@ -171,10 +172,14 @@ void electronic_diff_step(DiffState* state,
     }
 
     /* 3. Operating Mode Decision & Bump-less Debouncing:
+     * Manual driving restricts the differential to feedforward MingoMode (TV disabled)
+     * unless explicitly permitted by configuration. Closed-loop PartyMode is intended
+     * for autonomous / DV driving.
      * Switching from PartyMode (closed loop) to MingoMode (open loop) is INSTANT.
      * Returning to PartyMode is DEBOUNCED for mode_debounce_ms (150 ms) to avoid chatter. */
+    const bool allow_party_mode = in->is_dv_mode || config->vehicle.enable_party_mode_in_manual;
     if (in->steering_angle_valid) {
-        if (in->imu_valid && imu_plausible) {
+        if (in->imu_valid && imu_plausible && allow_party_mode) {
             if (state->mode == DIFF_MODE_PARTY) {
                 /* Maintain closed-loop mode */
             } else {
@@ -190,12 +195,14 @@ void electronic_diff_step(DiffState* state,
                 }
             }
         } else {
-            /* IMU lost, stale, or implausible -> instant bumpless fallback to mingomode */
+            /* Fallback to MingoMode (manual mode nominal, or IMU lost/stale/implausible) */
             state->imu_healthy_start_ms = 0;
             state->mode = DIFF_MODE_MINGO;
-            out->diag_flags |= DIFF_FLAG_FALLBACK_ACTIVE;
-            if (!in->imu_valid) {
-                out->diag_flags |= DIFF_FLAG_IMU_TIMEOUT;
+            if (allow_party_mode) {
+                out->diag_flags |= DIFF_FLAG_FALLBACK_ACTIVE;
+                if (!in->imu_valid) {
+                    out->diag_flags |= DIFF_FLAG_IMU_TIMEOUT;
+                }
             }
         }
     }
@@ -228,8 +235,24 @@ void electronic_diff_step(DiffState* state,
         const float tan_delta = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
         const float dir = (road_wheel_angle >= 0.0f) ? 1.0f : -1.0f;
         /* Scale k_diff (0..1) to achieve up to 35% base torque transfer across the axle */
-        float delta_t = t_base * k_diff * dir * 0.35f;
+        const float delta_t_static = t_base * k_diff * dir * 0.35f;
 
+        /* Dynamic feedforward based on steering wheel angular velocity:
+         * Provides crisp turn-in yaw assist without closed-loop hunting or driver fight */
+        float delta_t_dynamic = 0.0f;
+        if (config->vehicle.k_steer_speed_feedforward > 0.0f && in->steering_angle_valid) {
+            const float steer_rate_rads = (config->vehicle.steer_ratio > 0.01f)
+                ? (in->steering_wheel_speed_rad_s / config->vehicle.steer_ratio)
+                : 0.0f;
+            const float speed_factor = electronic_diff_calc_k_diff(config, 0.20f, in->vehicle_speed_mps);
+            delta_t_dynamic = config->vehicle.k_steer_speed_feedforward * steer_rate_rads * speed_factor;
+            delta_t_dynamic = clampf(delta_t_dynamic,
+                                     -config->vehicle.max_steer_speed_delta_nm,
+                                     config->vehicle.max_steer_speed_delta_nm);
+        }
+        out->delta_torque_speed_nm = delta_t_dynamic;
+
+        float delta_t = delta_t_static + delta_t_dynamic;
         /* Hard clamp to maximum allowable mechanical bias */
         delta_t = clampf(delta_t, -config->limits.max_delta_torque_nm, config->limits.max_delta_torque_nm);
         out->delta_torque_nm = delta_t;
