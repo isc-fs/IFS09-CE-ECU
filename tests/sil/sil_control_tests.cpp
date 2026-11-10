@@ -3719,6 +3719,9 @@ static void test_fsae_scrutineering_and_race_limits() {
         in.total_torque_demand_nm = 35.0f;
         in.is_dv_mode = false;
         in.now_ms = 1000;
+        const float base_omega = in.vehicle_speed_mps / cfg.vehicle.wheel_radius_m;
+        in.left_wheel_speed_rads = base_omega;
+        in.right_wheel_speed_rads = base_omega;
         DiffOutputs out{};
 
         // Settle in normal cornering
@@ -3728,9 +3731,8 @@ static void test_fsae_scrutineering_and_race_limits() {
         }
         const float t_left_normal = out.torque_left_nm;
 
-        // Inside wheel hits curb and flies into air -> massive slip error
-        in.erpm_left = static_cast<int32_t>(5600.0f * 1.45f);
-        in.erpm_right = 5600;
+        // Inside wheel hits curb and flies into air -> massive slip error (+45% omega)
+        in.left_wheel_speed_rads = base_omega * 1.45f;
         in.now_ms += 10;
         electronic_diff_step(&state, &cfg, &in, &out);
 
@@ -3751,6 +3753,9 @@ static void test_fsae_scrutineering_and_race_limits() {
         in.total_torque_demand_nm = 45.0f;
         in.is_dv_mode = false;
         in.now_ms = 2000;
+        const float base_omega = in.vehicle_speed_mps / cfg.vehicle.wheel_radius_m;
+        in.left_wheel_speed_rads = base_omega;
+        in.right_wheel_speed_rads = base_omega;
         DiffOutputs out{};
 
         // Baseline grip
@@ -3759,9 +3764,8 @@ static void test_fsae_scrutineering_and_race_limits() {
             electronic_diff_step(&state, &cfg, &in, &out);
         }
 
-        // Right wheel encounters water/paint: spins out
-        in.erpm_left = 5200;
-        in.erpm_right = static_cast<int32_t>(5200.0f * 1.35f);
+        // Right wheel encounters water/paint: spins out (+35% omega)
+        in.right_wheel_speed_rads = base_omega * 1.35f;
         in.now_ms += 10;
         electronic_diff_step(&state, &cfg, &in, &out);
 
@@ -3860,7 +3864,7 @@ static void test_fsae_scrutineering_and_race_limits() {
         CHECK(out.torque_right_nm > 15.0f, "Normal driving before inverter fault");
 
         // Right inverter reports critical trip (gate fault / overcurrent)
-        in.asymmetric_fault_detected = true;
+        in.inv_right_fault = true;
         in.now_ms += 10;
         electronic_diff_step(&state, &cfg, &in, &out);
 
