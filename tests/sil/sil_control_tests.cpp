@@ -1211,7 +1211,7 @@ static void test_t11_8_9_window() {
 }
 
 static void test_brake_plausibility_t11_8_8() {
-    std::printf("[brake_plausibility_t11_8_8]\n");
+    std::printf("[brake_plausibility_t11_8_8: EV 2.3 retired, trail-braking permitted]\n");
     Controller c;
     uint32_t t = 0;
     drive_to_active(c, t);
@@ -1225,28 +1225,33 @@ static void test_brake_plausibility_t11_8_8() {
     CHECK(o.torque_pct > 25, "50% APPS delivers torque without brake");
 
     in.brake_raw = in.cal.brake_pressed + 200;
-    // Momentary tap under 100ms must NOT cut torque (Ajuste 1: debounce window)
+    // EV 2.3 brake limitation removed: brake pressed does NOT cut torque
     o = c.step(in, t); t += ControlPeriodMs;
-    CHECK(o.torque_pct > 25, "Momentary brake tap under 100ms does NOT cut torque");
+    CHECK(o.torque_pct > 25, "Brake tap does NOT cut torque");
 
-    // Advance beyond 100 ms persistence window
+    // Advance beyond 100 ms: persistent braking does NOT cut torque (EV 2.3 retired)
     t += 100;
     o = c.step(in, t); t += ControlPeriodMs;
-    CHECK(o.torque_pct == 0, "Persistent braking (>=100ms) with APPS cuts torque to 0");
+    CHECK(o.torque_pct > 25, "Persistent braking (>=100ms) with APPS does NOT cut torque (trail-braking permitted)");
+
+    // Even continuous heavy braking does not cut throttle torque
+    t += 500;
+    o = c.step(in, t); t += ControlPeriodMs;
+    CHECK(o.torque_pct > 25, "Continuous heavy braking does not cut throttle torque");
 
     in.brake_raw = 0;
     o = c.step(in, t); t += ControlPeriodMs;
-    CHECK(o.torque_pct == 0, "T.11.8.8 remains latched with throttle held even after brake release");
+    CHECK(o.torque_pct > 25, "Torque remains active after brake release");
 
     in.apps1_raw = Apps1AdcMin;
     in.apps2_raw = Apps2AdcMin;
     o = c.step(in, t); t += ControlPeriodMs;
-    CHECK(o.torque_pct == 0, "Throttle released to 0");
+    CHECK(o.torque_pct == 0, "Throttle released to 0 -> torque 0");
 
     in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
     in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
     o = c.step(in, t); t += ControlPeriodMs;
-    CHECK(o.torque_pct > 25, "T.11.8.8 unlatches after full throttle release");
+    CHECK(o.torque_pct > 25, "Throttle re-applied delivers torque");
 }
 
 static void test_ams_error() {
@@ -3649,7 +3654,7 @@ static void test_fsae_scrutineering_and_race_limits() {
         CHECK(o.torque_pct == 0, "Scrutineering T11.8.9: Disagreement zeroes commanded torque");
     }
 
-    // A.3 EV2.3 Brake + APPS Plausibility & Latching
+    // A.3 EV2.3 retired: Simultaneous Brake + APPS permitted (trail-braking)
     {
         Controller c;
         uint32_t t = 0;
@@ -3661,21 +3666,23 @@ static void test_fsae_scrutineering_and_race_limits() {
         CtrlOutput o = c.step(in, t); t += ControlPeriodMs;
         t += 110;
         o = c.step(in, t); t += ControlPeriodMs;
-        CHECK(o.torque_pct == 0, "Scrutineering EV2.3: Brake + APPS cuts torque");
+        CHECK(o.torque_pct > 20, "Scrutineering EV2.3 retired: Brake + APPS does NOT cut torque");
 
-        // Release brake but keep throttle pressed: must stay latched!
+        // Release brake but keep throttle pressed: torque maintained
         in.brake_raw = 0;
         o = c.step(in, t); t += ControlPeriodMs;
-        CHECK(o.torque_pct == 0, "Scrutineering EV2.3: Torque remains latched to 0 while APPS held");
+        CHECK(o.torque_pct > 20, "Scrutineering: Torque remains active after brake release");
 
-        // Release throttle: unlatches
+        // Release throttle: drops to 0
         in.apps1_raw = Apps1AdcMin;
         in.apps2_raw = Apps2AdcMin;
         o = c.step(in, t); t += ControlPeriodMs;
+        CHECK(o.torque_pct == 0, "Torque is 0 when throttle released");
+
         in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
         in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
         o = c.step(in, t); t += ControlPeriodMs;
-        CHECK(o.torque_pct > 20, "Scrutineering EV2.3: Recovers after throttle return to < 5%");
+        CHECK(o.torque_pct > 20, "Torque delivers normally when re-applied");
     }
 
     // A.4 EV4.1.4 Cornering Net Torque Invariance & Actuator Limits
