@@ -3440,7 +3440,180 @@ static void test_electronic_differential() {
     CHECK(out.torque_left_nm + out.torque_right_nm <= 40.01f, "Net torque invariant preserved with feedforward");
 }
 
+// 16. Exhaustive Parameter Matrix & Dynamic Slalom Stress Simulation
+static void test_electronic_differential_stress_matrix() {
+    DiffConfig cfg = diff_config_get_default();
+
+    const float speeds[] = {
+        -20.0f, -10.0f, -0.80f, -0.10f, 0.0f,
+        0.10f, 0.50f, 0.79f, 0.81f, 2.0f,
+        5.0f, 10.0f, 15.0f, 20.0f, 25.0f, 30.0f, 40.0f
+    };
+    const float angles[] = {
+        -13.61f, -3.1415f, -0.785f, -0.523f, -0.20f,
+        -0.034f, 0.0f, 0.034f, 0.20f, 0.523f,
+        0.785f, 3.1415f, 13.61f
+    };
+    const float steer_speeds[] = {
+        -17.45f, -5.0f, -1.0f, 0.0f, 1.0f, 5.0f, 17.45f
+    };
+    const float demands[] = {
+        0.0f, 2.0f, 10.0f, 20.0f, 31.6f, 50.0f, 63.2f, 80.0f
+    };
+
+    uint32_t total_combinations = 0;
+    uint32_t nan_inf_count = 0;
+    uint32_t net_torque_violations = 0;
+    uint32_t negative_torque_violations = 0;
+    uint32_t motor_cap_violations = 0;
+    uint32_t zero_demand_violations = 0;
+    uint32_t direction_violations = 0;
+
+    for (float spd : speeds) {
+        for (float ang : angles) {
+            for (float s_spd : steer_speeds) {
+                for (float dem : demands) {
+                    ++total_combinations;
+                    DiffState state;
+                    electronic_diff_init(&state);
+                    DiffInputs in{};
+                    in.dt_s = 0.010f;
+                    in.vehicle_speed_mps = spd;
+                    in.steering_wheel_angle_rad = ang;
+                    in.steering_wheel_speed_rad_s = s_spd;
+                    in.steering_angle_valid = true;
+                    in.total_torque_demand_nm = dem;
+                    in.is_dv_mode = false;
+                    in.now_ms = 1000;
+                    DiffOutputs out{};
+
+                    // Step across 15 cycles to settle slew-rate ramps
+                    for (int step = 0; step < 15; ++step) {
+                        in.now_ms += 10;
+                        electronic_diff_step(&state, &cfg, &in, &out);
+                    }
+
+                    // 1. IEEE 754 Sanity Check
+                    if (std::isnan(out.torque_left_nm) || std::isnan(out.torque_right_nm) ||
+                        std::isinf(out.torque_left_nm) || std::isinf(out.torque_right_nm) ||
+                        std::isnan(out.current_left_apk) || std::isnan(out.current_right_apk)) {
+                        ++nan_inf_count;
+                    }
+
+                    // 2. Physical Torque Bounds [0, motor_max]
+                    if (out.torque_left_nm < -1e-4f || out.torque_right_nm < -1e-4f) {
+                        ++negative_torque_violations;
+                    }
+                    if (out.torque_left_nm > cfg.vehicle.motor_max_torque_nm + 0.01f ||
+                        out.torque_right_nm > cfg.vehicle.motor_max_torque_nm + 0.01f) {
+                        ++motor_cap_violations;
+                    }
+
+                    // 3. Zero Throttle Shutoff
+                    if (dem <= 0.0f && (out.torque_left_nm != 0.0f || out.torque_right_nm != 0.0f)) {
+                        ++zero_demand_violations;
+                    }
+
+                    // 4. Net Torque Limit Invariant (T_L + T_R <= T_demand)
+                    if (out.torque_left_nm + out.torque_right_nm > dem + 0.05f) {
+                        ++net_torque_violations;
+                    }
+
+                    // 5. Cornering Directional Bias Consistency (at speed above threshold with throttle)
+                    if (std::abs(spd) >= cfg.limits.min_velocity_mps && dem > 5.0f) {
+                        if (ang > 0.05f && s_spd >= 0.0f) {
+                            if (out.torque_right_nm < out.torque_left_nm - 0.01f) {
+                                ++direction_violations;
+                            }
+                        } else if (ang < -0.05f && s_spd <= 0.0f) {
+                            if (out.torque_left_nm < out.torque_right_nm - 0.01f) {
+                                ++direction_violations;
+                            }
+                        } else if (std::abs(ang) < 1e-4f && std::abs(s_spd) < 1e-4f) {
+                            if (std::abs(out.torque_left_nm - out.torque_right_nm) > 0.01f) {
+                                ++direction_violations;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    CHECK(total_combinations == 12376, "Stress matrix evaluated all 12,376 parameter grid points");
+    CHECK(nan_inf_count == 0, "Stress matrix produced ZERO NaN or Inf across all inputs");
+    CHECK(negative_torque_violations == 0, "Stress matrix produced ZERO negative motor torques");
+    CHECK(motor_cap_violations == 0, "Stress matrix strictly adhered to motor maximum torque ceiling (31.6 Nm)");
+    CHECK(zero_demand_violations == 0, "Zero throttle demand immediately produced 0 Nm on both motors");
+    CHECK(net_torque_violations == 0, "Net tractive torque invariant (T_L + T_R <= T_demanded) satisfied 100%");
+    CHECK(direction_violations == 0, "Cornering torque bias direction consistent across all steering angles and velocities");
+
+    // Dynamic Slalom Simulation: 1,000 steps continuous at 100 Hz
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 16.0f; // ~58 km/h
+        in.total_torque_demand_nm = 35.0f;
+        in.steering_angle_valid = true;
+        in.is_dv_mode = false;
+        DiffOutputs out{};
+
+        uint32_t slalom_net_torque_violations = 0;
+        uint32_t slalom_nan_violations = 0;
+
+        for (int step = 0; step < 1000; ++step) {
+            const float t = static_cast<float>(step) * 0.010f;
+            in.now_ms = 1000 + static_cast<uint32_t>(t * 1000.0f);
+            in.steering_wheel_angle_rad = 0.523f * std::sin(2.0f * 3.14159f * 1.2f * t);
+            in.steering_wheel_speed_rad_s = 0.523f * 2.0f * 3.14159f * 1.2f * std::cos(2.0f * 3.14159f * 1.2f * t);
+
+            electronic_diff_step(&state, &cfg, &in, &out);
+
+            if (out.torque_left_nm + out.torque_right_nm > in.total_torque_demand_nm + 0.05f) {
+                ++slalom_net_torque_violations;
+            }
+            if (std::isnan(out.torque_left_nm) || std::isnan(out.torque_right_nm)) {
+                ++slalom_nan_violations;
+            }
+        }
+        CHECK(slalom_net_torque_violations == 0, "Dynamic slalom: net torque invariant maintained continuously across 1000 steps");
+        CHECK(slalom_nan_violations == 0, "Dynamic slalom: zero NaN values across 1000 steps");
+    }
+
+    // Dynamic Slalom Zero-Crossing Verification
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 15.0f;
+        in.total_torque_demand_nm = 30.0f;
+        in.steering_angle_valid = true;
+        in.now_ms = 2000;
+        DiffOutputs out{};
+
+        // Turn Left: +30 deg
+        in.steering_wheel_angle_rad = 0.523f;
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_right_nm > out.torque_left_nm + 1.0f, "Slalom left turn: outside (right) wheel biased");
+
+        // Immediate Reversal to Turn Right: -30 deg
+        in.steering_wheel_angle_rad = -0.523f;
+        for (int i = 0; i < 25; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_left_nm > out.torque_right_nm + 1.0f, "Slalom reversal: bias smoothly inverted to outside (left) wheel");
+    }
+}
+
 static void run_all() {
+    test_electronic_differential_stress_matrix();
     test_apps_pct();
     test_cold_start();
     test_boot_sequence();
@@ -3528,7 +3701,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(m, "--test-dv-mode"))            test_dv_mode();
     else if (!std::strcmp(m, "--test-radio"))              test_radio_snapshot();
     else if (!std::strcmp(m, "--test-gps"))                test_gps();
-    else if (!std::strcmp(m, "--test-diff"))               test_electronic_differential();
+    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); }
     else                                                   run_all();  // --test-integration / --test-all / default
 
     std::printf("=== %d checks, %d failed ===\n", g_checks, g_fails);
