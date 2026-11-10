@@ -3612,7 +3612,265 @@ static void test_electronic_differential_stress_matrix() {
     }
 }
 
+// 17. Formula Student Electrical Scrutineering & Extreme Race Limit Conditions
+static void test_fsae_scrutineering_and_race_limits() {
+    std::printf("[fsae_scrutineering_and_race_limits]\n");
+    DiffConfig cfg = diff_config_get_default();
+
+    // -------------------------------------------------------------
+    // Part A: Scrutineering Checks (E-Scrutineering)
+    // -------------------------------------------------------------
+    // A.1 T11.8.8 APPS Sensor Out-of-Range (Open wire / 0V ADC)
+    {
+        Controller c;
+        uint32_t t = 0;
+        drive_to_active(c, t);
+        CtrlInputs in = good_drive_inputs();
+        in.apps1_raw = 0; // Disconnected cable (< Apps1AdcMin)
+        in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
+        CtrlOutput o = c.step(in, t); t += ControlPeriodMs;
+        t += AppsDisagreePersistMs;
+        o = c.step(in, t);
+        CHECK(o.torque_pct == 0, "Scrutineering T11.8.8: APPS out-of-range disconnection cuts torque to 0");
+    }
+
+    // A.2 T11.8.9 Sensor Disagreement (>10%) & Unlatching
+    {
+        Controller c;
+        uint32_t t = 0;
+        drive_to_active(c, t);
+        CtrlInputs in = good_drive_inputs();
+        in.apps1_raw = Apps1AdcMax; // 100%
+        in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2; // 50% -> 50% gap (> 10%)
+        t += AppsDisagreePersistMs + 10;
+        CtrlOutput o = c.step(in, t);
+        CHECK(o.t11_8_9, "Scrutineering T11.8.9: Disagreement trips after persistence window");
+        CHECK(o.torque_pct == 0, "Scrutineering T11.8.9: Disagreement zeroes commanded torque");
+    }
+
+    // A.3 EV2.3 Brake + APPS Plausibility & Latching
+    {
+        Controller c;
+        uint32_t t = 0;
+        drive_to_active(c, t);
+        CtrlInputs in = good_drive_inputs();
+        in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
+        in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
+        in.brake_raw = in.cal.brake_pressed + 300;
+        t += 110;
+        CtrlOutput o = c.step(in, t);
+        CHECK(o.torque_pct == 0, "Scrutineering EV2.3: Brake + APPS cuts torque");
+
+        // Release brake but keep throttle pressed: must stay latched!
+        in.brake_raw = 0;
+        o = c.step(in, t);
+        CHECK(o.torque_pct == 0, "Scrutineering EV2.3: Torque remains latched to 0 while APPS held");
+
+        // Release throttle: unlatches
+        in.apps1_raw = Apps1AdcMin;
+        in.apps2_raw = Apps2AdcMin;
+        o = c.step(in, t);
+        in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
+        in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
+        o = c.step(in, t);
+        CHECK(o.torque_pct > 20, "Scrutineering EV2.3: Recovers after throttle return to < 5%");
+    }
+
+    // A.4 EV4.1.4 Cornering Net Torque Invariance & Actuator Limits
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 16.0f;
+        in.steering_angle_valid = true;
+        in.is_dv_mode = false;
+        DiffOutputs out{};
+
+        const float demand = 50.0f;
+        in.total_torque_demand_nm = demand;
+        in.steering_wheel_angle_rad = 0.45f; // Hard left cornering
+
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_left_nm + out.torque_right_nm <= demand + 0.01f,
+              "Scrutineering EV4.1.4: Net tractive torque strictly <= demanded");
+        CHECK(out.torque_right_nm <= cfg.vehicle.motor_max_torque_nm + 0.01f,
+              "Scrutineering EV4.1.4: Outside motor clamped to 31.6 Nm max");
+        CHECK(out.torque_left_nm >= 0.0f,
+              "Scrutineering EV4.1.4: Inside motor non-negative (no reverse torque without regen)");
+    }
+
+    // -------------------------------------------------------------
+    // Part B: Extreme Race Limit Conditions
+    // -------------------------------------------------------------
+    // B.1 Race Limit: Curb Strike / Wheel Lift-Off
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 15.0f;
+        in.steering_wheel_angle_rad = 0.35f; // Left turn (left is inside wheel)
+        in.steering_angle_valid = true;
+        in.wheel_speeds_valid = true;
+        in.total_torque_demand_nm = 35.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 1000;
+        DiffOutputs out{};
+
+        // Settle in normal cornering
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        const float t_left_normal = out.torque_left_nm;
+
+        // Inside wheel hits curb and flies into air -> massive slip error
+        in.erpm_left = static_cast<int32_t>(5600.0f * 1.45f);
+        in.erpm_right = 5600;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+
+        CHECK(out.torque_left_nm < t_left_normal,
+              "Race Limit: Curb strike / wheel lift-off triggers Virtual LSD torque reduction on airborne wheel");
+    }
+
+    // B.2 Race Limit: Split-Mu Surface Acceleration (Right wheel hits puddle)
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 14.0f;
+        in.steering_wheel_angle_rad = 0.0f; // Straight line acceleration
+        in.steering_angle_valid = true;
+        in.wheel_speeds_valid = true;
+        in.total_torque_demand_nm = 45.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 2000;
+        DiffOutputs out{};
+
+        // Baseline grip
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+
+        // Right wheel encounters water/paint: spins out
+        in.erpm_left = 5200;
+        in.erpm_right = static_cast<int32_t>(5200.0f * 1.35f);
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+
+        CHECK(out.torque_right_nm < out.torque_left_nm,
+              "Race Limit: Split-mu puddle encounter: Virtual LSD cuts torque to slipping right wheel");
+    }
+
+    // B.3 Race Limit: High-Speed Trail Braking into Hairpin
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 22.0f; // ~80 km/h
+        in.steering_wheel_angle_rad = 0.50f;
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 0.0f; // Driver lifted off to threshold-brake
+        in.is_dv_mode = false;
+        in.now_ms = 3000;
+        DiffOutputs out{};
+
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK(out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "Race Limit: High-speed trail braking zeroes motor torques immediately");
+    }
+
+    // B.4 Race Limit: Rollback on Incline Pull-Away
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = -2.0f; // Rolling backwards downhill
+        in.steering_wheel_angle_rad = 0.25f;
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 30.0f; // Forward driver demand
+        in.is_dv_mode = false;
+        in.now_ms = 4000;
+        DiffOutputs out{};
+
+        for (int i = 0; i < 15; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_left_nm >= 0.0f && out.torque_right_nm >= 0.0f,
+              "Race Limit: Rollback pull-away produces forward non-negative torques");
+        CHECK(out.torque_left_nm + out.torque_right_nm <= 30.01f,
+              "Race Limit: Rollback pull-away preserves net torque invariant");
+    }
+
+    // B.5 Race Limit: Endurance Lap 20/22 Thermal & Low-Voltage Derating
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 18.0f;
+        in.steering_wheel_angle_rad = 0.30f;
+        in.steering_angle_valid = true;
+        // Total torque budget reduced 50% due to cell voltage sag / motor heat
+        const float derated_demand = 63.2f * 0.50f;
+        in.total_torque_demand_nm = derated_demand;
+        in.is_dv_mode = false;
+        in.now_ms = 5000;
+        DiffOutputs out{};
+
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_left_nm + out.torque_right_nm <= derated_demand + 0.01f,
+              "Race Limit: Endurance derating: net torque respects reduced envelope");
+        CHECK(out.torque_right_nm > out.torque_left_nm,
+              "Race Limit: Endurance derating: cornering vectoring bias smoothly maintained");
+    }
+
+    // B.6 Race Limit: Asymmetric Inverter Hardware Trip
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 16.0f;
+        in.steering_wheel_angle_rad = 0.35f;
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 40.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 6000;
+        DiffOutputs out{};
+
+        // Settle active drive
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_right_nm > 15.0f, "Normal driving before inverter fault");
+
+        // Right inverter reports critical trip (gate fault / overcurrent)
+        in.asymmetric_fault_detected = true;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+
+        CHECK(out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "Race Limit: Asymmetric inverter trip cuts both motor torques with 0 ms latency");
+    }
+}
+
 static void run_all() {
+    test_fsae_scrutineering_and_race_limits();
     test_electronic_differential_stress_matrix();
     test_apps_pct();
     test_cold_start();
@@ -3701,7 +3959,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(m, "--test-dv-mode"))            test_dv_mode();
     else if (!std::strcmp(m, "--test-radio"))              test_radio_snapshot();
     else if (!std::strcmp(m, "--test-gps"))                test_gps();
-    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); }
+    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); test_fsae_scrutineering_and_race_limits(); }
     else                                                   run_all();  // --test-integration / --test-all / default
 
     std::printf("=== %d checks, %d failed ===\n", g_checks, g_fails);
