@@ -3630,7 +3630,7 @@ static void test_fsae_scrutineering_and_race_limits() {
         in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
         CtrlOutput o = c.step(in, t); t += ControlPeriodMs;
         t += AppsDisagreePersistMs;
-        o = c.step(in, t);
+        o = c.step(in, t); t += ControlPeriodMs;
         CHECK(o.torque_pct == 0, "Scrutineering T11.8.8: APPS out-of-range disconnection cuts torque to 0");
     }
 
@@ -3642,8 +3642,9 @@ static void test_fsae_scrutineering_and_race_limits() {
         CtrlInputs in = good_drive_inputs();
         in.apps1_raw = Apps1AdcMax; // 100%
         in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2; // 50% -> 50% gap (> 10%)
-        t += AppsDisagreePersistMs + 10;
-        CtrlOutput o = c.step(in, t);
+        CtrlOutput o = c.step(in, t); t += ControlPeriodMs;
+        t += AppsDisagreePersistMs;
+        o = c.step(in, t); t += ControlPeriodMs;
         CHECK(o.t11_8_9, "Scrutineering T11.8.9: Disagreement trips after persistence window");
         CHECK(o.torque_pct == 0, "Scrutineering T11.8.9: Disagreement zeroes commanded torque");
     }
@@ -3657,22 +3658,23 @@ static void test_fsae_scrutineering_and_race_limits() {
         in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
         in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
         in.brake_raw = in.cal.brake_pressed + 300;
+        CtrlOutput o = c.step(in, t); t += ControlPeriodMs;
         t += 110;
-        CtrlOutput o = c.step(in, t);
+        o = c.step(in, t); t += ControlPeriodMs;
         CHECK(o.torque_pct == 0, "Scrutineering EV2.3: Brake + APPS cuts torque");
 
         // Release brake but keep throttle pressed: must stay latched!
         in.brake_raw = 0;
-        o = c.step(in, t);
+        o = c.step(in, t); t += ControlPeriodMs;
         CHECK(o.torque_pct == 0, "Scrutineering EV2.3: Torque remains latched to 0 while APPS held");
 
         // Release throttle: unlatches
         in.apps1_raw = Apps1AdcMin;
         in.apps2_raw = Apps2AdcMin;
-        o = c.step(in, t);
+        o = c.step(in, t); t += ControlPeriodMs;
         in.apps1_raw = (Apps1AdcMin + Apps1AdcMax) / 2;
         in.apps2_raw = (Apps2AdcMin + Apps2AdcMax) / 2;
-        o = c.step(in, t);
+        o = c.step(in, t); t += ControlPeriodMs;
         CHECK(o.torque_pct > 20, "Scrutineering EV2.3: Recovers after throttle return to < 5%");
     }
 
@@ -3733,8 +3735,10 @@ static void test_fsae_scrutineering_and_race_limits() {
 
         // Inside wheel hits curb and flies into air -> massive slip error (+45% omega)
         in.left_wheel_speed_rads = base_omega * 1.45f;
-        in.now_ms += 10;
-        electronic_diff_step(&state, &cfg, &in, &out);
+        for (int i = 0; i < 5; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
 
         CHECK(out.torque_left_nm < t_left_normal,
               "Race Limit: Curb strike / wheel lift-off triggers Virtual LSD torque reduction on airborne wheel");
@@ -3766,8 +3770,10 @@ static void test_fsae_scrutineering_and_race_limits() {
 
         // Right wheel encounters water/paint: spins out (+35% omega)
         in.right_wheel_speed_rads = base_omega * 1.35f;
-        in.now_ms += 10;
-        electronic_diff_step(&state, &cfg, &in, &out);
+        for (int i = 0; i < 5; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
 
         CHECK(out.torque_right_nm < out.torque_left_nm,
               "Race Limit: Split-mu puddle encounter: Virtual LSD cuts torque to slipping right wheel");
