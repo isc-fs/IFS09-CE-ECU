@@ -4158,6 +4158,298 @@ static void test_electronic_diff_advanced_safety_and_edge_cases() {
     }
 }
 
+static void test_electronic_diff_party_mingo_party_transitions() {
+    std::printf("[electronic_diff_party_mingo_party_transitions]\n");
+    const DiffConfig cfg = diff_config_get_default();
+
+    DiffState state;
+    electronic_diff_init(&state);
+    DiffInputs in{};
+    in.dt_s = 0.010f;
+    in.vehicle_speed_mps = 15.0f;
+    in.steering_wheel_angle_rad = 0.25f; // Steady left turn
+    in.steering_angle_valid = true;
+    in.imu_valid = true;
+    in.measured_yaw_rate_rads = 0.22f;
+    in.lateral_accel_mps2 = in.vehicle_speed_mps * in.measured_yaw_rate_rads; // Plausible: 15 * 0.22 = 3.30 m/s^2
+    in.total_torque_demand_nm = 40.0f;
+    in.is_dv_mode = true; // DV allows PartyMode
+    in.now_ms = 1000;
+    DiffOutputs out{};
+
+    // Settle into PartyMode (150 ms debounce)
+    for (int i = 0; i < 25; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_PARTY, "Transitions: Initial entry into PartyMode verified");
+    CHECK(out.torque_right_nm > out.torque_left_nm, "Transitions: PartyMode actively biasing outside wheel");
+    const float party_t_left = out.torque_left_nm;
+    const float party_t_right = out.torque_right_nm;
+
+    // Step 1: Drop IMU (sensor loss / timeout) -> Instant transition to MingoMode (0 ms lag)
+    in.imu_valid = false;
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+
+    CHECK(out.mode == DIFF_MODE_MINGO, "Transitions: Instant drop to MingoMode on IMU loss (0 ms lag)");
+    CHECK((out.diag_flags & DIFF_FLAG_FALLBACK_ACTIVE) != 0, "Transitions: Fallback active flag set");
+    CHECK((out.diag_flags & DIFF_FLAG_IMU_TIMEOUT) != 0, "Transitions: IMU timeout flag set");
+    CHECK(state.pid_integral_nm == 0.0f, "Transitions: PID integrator washed out to prevent bump on return");
+    // Transition torque change is bounded by slew rate (no discontinuous shock)
+    const float step_drop_l = fabsf(out.torque_left_nm - party_t_left);
+    const float step_drop_r = fabsf(out.torque_right_nm - party_t_right);
+    const float max_allowed_step = cfg.limits.max_slew_rate_nm_s * in.dt_s * 2.5f + 0.5f;
+    CHECK(step_drop_l <= max_allowed_step && step_drop_r <= max_allowed_step,
+          "Transitions: Party -> Mingo torque change strictly bounded by slew rate limiter");
+
+    // Settle in MingoMode for 100 ms
+    for (int i = 0; i < 10; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_MINGO, "Transitions: Stable in MingoMode feedforward");
+    CHECK(out.torque_right_nm > out.torque_left_nm, "Transitions: MingoMode maintains outside wheel bias");
+
+    // Step 2: IMU stream recovers
+    in.imu_valid = true;
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+
+    // 2.1 At 50 ms after recovery: STILL in MingoMode (debouncing 150 ms)
+    for (int i = 0; i < 5; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_MINGO, "Transitions: Anti-chatter debounce holding in MingoMode (<150 ms)");
+    CHECK((out.diag_flags & DIFF_FLAG_FALLBACK_ACTIVE) != 0, "Transitions: Fallback flag maintained during debounce");
+
+    // 2.2 At 160 ms after recovery (> 150 ms debounce): Clean transition back to PartyMode
+    for (int i = 0; i < 11; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_PARTY, "Transitions: Clean debounced return to PartyMode closed-loop");
+    CHECK((out.diag_flags & DIFF_FLAG_FALLBACK_ACTIVE) == 0, "Transitions: Fallback flag cleared");
+    CHECK(out.torque_right_nm > out.torque_left_nm, "Transitions: PartyMode closed-loop TV resumed");
+
+    // Step 3: Curb strike shock (kinematic implausibility)
+    in.lateral_accel_mps2 = 50.0f; // Spike to >5g
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK(out.mode == DIFF_MODE_MINGO, "Transitions: Curb shock instantly degrades PartyMode to MingoMode");
+    CHECK((out.diag_flags & DIFF_FLAG_IMU_IMPLAUSIBLE) != 0, "Transitions: Implausibility flag set");
+
+    // Normalize acceleration and verify debounced re-entry to PartyMode
+    in.lateral_accel_mps2 = 3.30f;
+    for (int i = 0; i < 16; ++i) { // 160 ms
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_PARTY, "Transitions: PartyMode re-established after curb shock passes");
+}
+
+static void test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions() {
+    std::printf("[electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions]\n");
+    const DiffConfig cfg = diff_config_get_default();
+
+    // 1. Throttle Stomp Sweep across Steering Angles (0 deg, 10 deg, 30 deg)
+    {
+        const float steer_angles_deg[] = {0.0f, 10.0f, 30.0f};
+        for (float steer_deg : steer_angles_deg) {
+            DiffState state;
+            electronic_diff_init(&state);
+            DiffInputs in{};
+            in.dt_s = 0.010f;
+            in.vehicle_speed_mps = 16.0f;
+            in.steering_wheel_angle_rad = steer_deg * (3.14159265f / 180.0f);
+            in.steering_angle_valid = true;
+            in.total_torque_demand_nm = 0.0f; // Standby
+            in.is_dv_mode = false;
+            in.now_ms = 2000;
+            DiffOutputs out{};
+
+            // Initial tick with 0 demand
+            electronic_diff_step(&state, &cfg, &in, &out);
+            CHECK(out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f, "Stomp: Baseline 0 demand");
+
+            // Driver stomps pedal to 100% (63.2 Nm) in a single 10 ms cycle
+            in.total_torque_demand_nm = 63.2f;
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+
+            const float max_up_step = cfg.limits.max_slew_rate_nm_s * in.dt_s + 0.1f;
+            CHECK(out.torque_left_nm <= max_up_step && out.torque_right_nm <= max_up_step,
+                  "Stomp: First tick strictly rate-limited against shock");
+
+            // Monitor ramp-up across 25 ticks
+            float prev_l = out.torque_left_nm;
+            float prev_r = out.torque_right_nm;
+            bool invariant_preserved = true;
+            bool bias_correct = true;
+
+            for (int i = 0; i < 25; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+
+                if (out.torque_left_nm + out.torque_right_nm > in.total_torque_demand_nm + 0.02f) {
+                    invariant_preserved = false;
+                }
+                if (steer_deg > 5.0f && out.torque_right_nm < out.torque_left_nm) {
+                    bias_correct = false; // Outside wheel right must lead
+                } else if (steer_deg == 0.0f && fabsf(out.torque_left_nm - out.torque_right_nm) > 0.01f) {
+                    bias_correct = false; // Straight line must be symmetric
+                }
+
+                const float step_l = fabsf(out.torque_left_nm - prev_l);
+                const float step_r = fabsf(out.torque_right_nm - prev_r);
+                const float max_tick = cfg.limits.max_slew_rate_nm_s * in.dt_s * 2.5f + 0.2f;
+                CHECK(step_l <= max_tick && step_r <= max_tick,
+                      "Stomp: Every intermediate tick bounded by slew rate");
+                prev_l = out.torque_left_nm;
+                prev_r = out.torque_right_nm;
+            }
+            CHECK(invariant_preserved, "Stomp: Net torque invariant holds throughout full stomp transient");
+            CHECK(bias_correct, "Stomp: Steering bias monotonically respected throughout stomp ramp");
+
+            if (steer_deg > 20.0f) {
+                CHECK(out.torque_right_nm - out.torque_left_nm > 5.0f,
+                      "Stomp: Strong outside torque differential established at tight angle");
+            }
+
+            // Driver instantly lifts off pedal
+            in.total_torque_demand_nm = 0.0f;
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+            CHECK(out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+                  "Stomp: Instant lift-off cuts torque immediately (0 ms lag)");
+        }
+    }
+
+    // 2. Closed-Loop Reactive Torque Vectoring (Reactions to Vehicle Understeer and Oversteer)
+    {
+        // 2.1 Understeer Intervention: Car pushing wide (measured yaw < target yaw)
+        // Torque Vectoring MUST react by increasing outside torque bias to yaw vehicle into apex!
+        {
+            DiffState state;
+            electronic_diff_init(&state);
+            DiffInputs in{};
+            in.dt_s = 0.010f;
+            in.vehicle_speed_mps = 16.0f;
+            in.steering_wheel_angle_rad = 0.35f; // Left turn
+            in.steering_angle_valid = true;
+            in.imu_valid = true;
+            in.total_torque_demand_nm = 45.0f;
+            in.is_dv_mode = true; // PartyMode
+            in.now_ms = 3000;
+            DiffOutputs out{};
+
+            bool sat = false;
+            const float r_target = electronic_diff_calc_target_yaw_rate(&cfg, 0.35f / cfg.vehicle.steer_ratio, 16.0f, &sat);
+            in.measured_yaw_rate_rads = r_target;
+            in.lateral_accel_mps2 = 16.0f * r_target;
+
+            for (int i = 0; i < 20; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            const float nominal_delta_t = out.torque_right_nm - out.torque_left_nm;
+
+            // Incur understeer: front slip angle increases, yaw rate drops 50%
+            in.measured_yaw_rate_rads = r_target * 0.50f;
+            in.lateral_accel_mps2 = 16.0f * in.measured_yaw_rate_rads;
+            for (int i = 0; i < 15; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            const float understeer_delta_t = out.torque_right_nm - out.torque_left_nm;
+
+            CHECK(understeer_delta_t > nominal_delta_t,
+                  "Reactive: Understeer triggers increased outside wheel bias to yaw vehicle into apex");
+            CHECK(out.yaw_rate_error_rads > 0.0f, "Reactive: Yaw rate error is positive in understeer");
+            CHECK(out.yaw_moment_nm > 0.0f, "Reactive: Corrective yaw moment is positive (yaw assist)");
+        }
+
+        // 2.2 Oversteer Intervention: Tail stepping out (measured yaw > target yaw)
+        // Torque Vectoring MUST react by reducing outside torque or transferring to inside!
+        {
+            DiffState state;
+            electronic_diff_init(&state);
+            DiffInputs in{};
+            in.dt_s = 0.010f;
+            in.vehicle_speed_mps = 16.0f;
+            in.steering_wheel_angle_rad = 0.35f; // Left turn
+            in.steering_angle_valid = true;
+            in.imu_valid = true;
+            in.total_torque_demand_nm = 45.0f;
+            in.is_dv_mode = true; // PartyMode
+            in.now_ms = 4000;
+            DiffOutputs out{};
+
+            bool sat = false;
+            const float r_target = electronic_diff_calc_target_yaw_rate(&cfg, 0.35f / cfg.vehicle.steer_ratio, 16.0f, &sat);
+            in.measured_yaw_rate_rads = r_target;
+            in.lateral_accel_mps2 = 16.0f * r_target;
+
+            for (int i = 0; i < 20; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            const float nominal_delta_t = out.torque_right_nm - out.torque_left_nm;
+
+            // Incur oversteer: rear steps out, yaw rate jumps 60% above target
+            in.measured_yaw_rate_rads = r_target * 1.60f;
+            in.lateral_accel_mps2 = 16.0f * in.measured_yaw_rate_rads;
+            for (int i = 0; i < 15; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            const float oversteer_delta_t = out.torque_right_nm - out.torque_left_nm;
+
+            CHECK(oversteer_delta_t < nominal_delta_t,
+                  "Reactive: Oversteer reduces outside torque bias / applies stabilizing counter-moment");
+            CHECK(out.yaw_rate_error_rads < 0.0f, "Reactive: Yaw rate error is negative in oversteer");
+            CHECK(out.yaw_moment_nm < 0.0f, "Reactive: Corrective yaw moment opposes vehicle over-rotation");
+        }
+
+        // 2.3 Emergency Spin Intervention: Critical side-slip angle beta > beta_crit (8.5 deg)
+        {
+            DiffState state;
+            electronic_diff_init(&state);
+            DiffInputs in{};
+            in.dt_s = 0.010f;
+            in.vehicle_speed_mps = 18.0f;
+            in.steering_wheel_angle_rad = 0.30f;
+            in.steering_angle_valid = true;
+            in.imu_valid = true;
+            in.total_torque_demand_nm = 50.0f;
+            in.is_dv_mode = true;
+            in.now_ms = 5000;
+            DiffOutputs out{};
+
+            // Baseline cornering
+            in.measured_yaw_rate_rads = 0.30f;
+            in.lateral_accel_mps2 = 18.0f * 0.30f;
+            for (int i = 0; i < 20; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            const float pre_spin_torque = out.torque_left_nm + out.torque_right_nm;
+
+            // Induce excessive side slip rate (d_beta = ay/vx - r) while keeping within plausibility (|ay - vx*r| <= 15 m/s^2)
+            in.lateral_accel_mps2 = 18.0f * 0.30f + 12.0f; // 12 m/s^2 diff -> d_beta = 0.667 rad/s
+            for (int i = 0; i < 30; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            CHECK((out.diag_flags & DIFF_FLAG_EMERGENCY_SPIN) != 0,
+                  "Reactive: Beta exceeding critical threshold asserts DIFF_FLAG_EMERGENCY_SPIN");
+            CHECK(out.torque_left_nm + out.torque_right_nm < pre_spin_torque * 0.45f,
+                  "Reactive: Emergency spin mitigation cuts total drive torque aggressively to stabilize chassis");
+        }
+    }
+}
+
 static void run_all() {
     test_fsae_scrutineering_and_race_limits();
     test_electronic_differential_stress_matrix();
@@ -4203,6 +4495,8 @@ static void run_all() {
     test_gps();
     test_electronic_differential();
     test_electronic_diff_advanced_safety_and_edge_cases();
+    test_electronic_diff_party_mingo_party_transitions();
+    test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions();
 }
 
 int main(int argc, char** argv) {
@@ -4249,7 +4543,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(m, "--test-dv-mode"))            test_dv_mode();
     else if (!std::strcmp(m, "--test-radio"))              test_radio_snapshot();
     else if (!std::strcmp(m, "--test-gps"))                test_gps();
-    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); test_fsae_scrutineering_and_race_limits(); test_electronic_diff_advanced_safety_and_edge_cases(); }
+    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); test_fsae_scrutineering_and_race_limits(); test_electronic_diff_advanced_safety_and_edge_cases(); test_electronic_diff_party_mingo_party_transitions(); test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(); }
     else                                                   run_all();  // --test-integration / --test-all / default
 
     std::printf("=== %d checks, %d failed ===\n", g_checks, g_fails);
