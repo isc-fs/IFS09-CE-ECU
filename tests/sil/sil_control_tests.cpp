@@ -3888,7 +3888,7 @@ static void test_fsae_scrutineering_and_race_limits() {
 
 static void test_electronic_diff_advanced_safety_and_edge_cases() {
     std::printf("[electronic_diff_advanced_safety_and_edge_cases]\n");
-    const DiffConfig cfg = get_default_diff_config();
+    const DiffConfig cfg = diff_config_get_default();
 
     // 1. Asymmetric Inverter Trip (Left & Right) with Zero-Latency Cut and Slew Recovery
     {
