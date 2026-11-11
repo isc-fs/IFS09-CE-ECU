@@ -219,7 +219,7 @@ void electronic_diff_step(DiffState* state,
     }
 
     /* 4. Compute Torque Distribution According to Mode */
-    if (state->mode == DIFF_MODE_PASSIVE || fabsf(in->vehicle_speed_mps) < config->limits.min_velocity_mps) {
+    if (state->mode == DIFF_MODE_PASSIVE || in->vehicle_speed_mps < config->limits.min_velocity_mps) {
         /* Mode 0: Symmetric 50/50 split */
         const float t_base = t_total * 0.5f;
         t_left_raw = t_base;
@@ -356,7 +356,7 @@ void electronic_diff_step(DiffState* state,
         t_right_raw = t_base_right + delta_t_tv;
 
         /* 4.3 Vehicle side-slip angle (beta) observer & emergency spin protection */
-        if (fabsf(in->vehicle_speed_mps) > 1.5f) {
+        if (in->vehicle_speed_mps > 1.5f) {
             const float d_beta = (in->lateral_accel_mps2 / in->vehicle_speed_mps) - in->measured_yaw_rate_rads;
             /* Washout leakage prevents long-term integration drift */
             state->side_slip_beta_rad = state->side_slip_beta_rad * (1.0f - 0.05f * dt) + d_beta * dt;
@@ -381,8 +381,8 @@ void electronic_diff_step(DiffState* state,
     }
 
     /* 5. Active Traction Control (TCS) Slip Ratio Limiter */
-    if (in->wheel_speeds_valid && fabsf(in->vehicle_speed_mps) > 0.5f) {
-        const float v_ref = (fabsf(in->vehicle_speed_mps) > 1.0f) ? fabsf(in->vehicle_speed_mps) : 1.0f;
+    if (in->wheel_speeds_valid && in->vehicle_speed_mps > 0.5f) {
+        const float v_ref = (in->vehicle_speed_mps > 1.0f) ? in->vehicle_speed_mps : 1.0f;
         const float v_wheel_l = in->left_wheel_speed_rads * config->vehicle.wheel_radius_m;
         const float v_wheel_r = in->right_wheel_speed_rads * config->vehicle.wheel_radius_m;
 

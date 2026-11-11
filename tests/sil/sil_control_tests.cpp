@@ -3886,6 +3886,263 @@ static void test_fsae_scrutineering_and_race_limits() {
     }
 }
 
+static void test_electronic_diff_advanced_safety_and_edge_cases() {
+    std::printf("[electronic_diff_advanced_safety_and_edge_cases]\n");
+    const DiffConfig cfg = get_default_diff_config();
+
+    // 1. Asymmetric Inverter Trip (Left & Right) with Zero-Latency Cut and Slew Recovery
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 15.0f;
+        in.steering_wheel_angle_rad = 0.40f; // Left turn
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 50.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 1000;
+        DiffOutputs out{};
+
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_right_nm > 20.0f, "Asymmetric: Active torque established");
+
+        // 1.1 Left inverter drops out
+        in.inv_left_fault = true;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK(out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "Asymmetric: Left fault immediately zeroes BOTH motors (0 ms lag)");
+        CHECK((out.diag_flags & DIFF_FLAG_ASYMMETRIC_FAULT) != 0,
+              "Asymmetric: DIFF_FLAG_ASYMMETRIC_FAULT asserted");
+
+        // 1.2 Clear fault: torque must ramp smoothly, not jump instantly
+        in.inv_left_fault = false;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK(out.torque_right_nm <= cfg.limits.max_slew_rate_nm_s * in.dt_s + 0.1f,
+              "Asymmetric: Post-fault recovery is slew-rate limited, avoiding drivetrain shock");
+
+        // 1.3 Right inverter drops out
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        in.inv_right_fault = true;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK(out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "Asymmetric: Right fault immediately zeroes BOTH motors");
+    }
+
+    // 2. Rollback & Reverse Speed Invariance
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.steering_wheel_angle_rad = 0.50f; // Driver full left lock
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 30.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 2000;
+        DiffOutputs out{};
+
+        // Test at various negative speeds (rolling backward down slope)
+        const float test_neg_speeds[] = {-5.0f, -2.0f, -0.5f, 0.0f, 0.8f};
+        for (float v_neg : test_neg_speeds) {
+            in.vehicle_speed_mps = v_neg;
+            for (int i = 0; i < 15; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            CHECK(fabsf(out.torque_left_nm - out.torque_right_nm) < 0.01f,
+                  "Rollback: Below min velocity / in reverse, split is strictly 50/50 symmetric");
+            CHECK(fabsf(out.delta_torque_nm) < 0.01f,
+                  "Rollback: Delta torque is 0, no inverted vectoring in reverse");
+            CHECK(out.torque_left_nm + out.torque_right_nm <= in.total_torque_demand_nm + 0.01f,
+                  "Rollback: Preserves net torque constraint");
+        }
+    }
+
+    // 3. Multi-Limiter Collision (Stacked Caps: 80kW Envelope + Low Cell Derating + Thermal)
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 22.0f; // High speed
+        in.steering_wheel_angle_rad = 0.30f;
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 63.2f; // Driver wants 100%
+        in.max_motor_torque_limit_nm = 12.0f; // Power/thermal envelope clamps motor cap to 12 Nm
+        in.is_dv_mode = false;
+        in.now_ms = 3000;
+        DiffOutputs out{};
+
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_left_nm <= 12.01f && out.torque_right_nm <= 12.01f,
+              "Stacked Caps: Individual motor torques strictly observe dynamic motor cap");
+        CHECK(out.torque_left_nm + out.torque_right_nm <= in.total_torque_demand_nm + 0.01f,
+              "Stacked Caps: Net torque invariant preserved under heavy capping");
+        CHECK(out.torque_right_nm >= out.torque_left_nm,
+              "Stacked Caps: Outside wheel bias preserved without sign flip");
+    }
+
+    // 4. Sensor Fuzzing & Glitch Rejection
+    {
+        // 4.1 IMU Curb Strike Transient Spike
+        {
+            DiffState state;
+            electronic_diff_init(&state);
+            DiffInputs in{};
+            in.dt_s = 0.010f;
+            in.vehicle_speed_mps = 16.0f;
+            in.steering_wheel_angle_rad = 0.05f; // Almost straight
+            in.steering_angle_valid = true;
+            in.imu_valid = true;
+            in.measured_yaw_rate_rads = 0.05f;
+            in.lateral_accel_mps2 = 0.8f; // Expected ~ 16 * 0.05 = 0.8 m/s^2
+            in.total_torque_demand_nm = 40.0f;
+            in.is_dv_mode = true; // PartyMode eligible
+            in.now_ms = 4000;
+            DiffOutputs out{};
+
+            for (int i = 0; i < 20; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+
+            // Hit curb: a_y spikes to 50 m/s^2 (> 5g) for 2 ticks
+            in.lateral_accel_mps2 = 50.0f;
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+            CHECK((out.diag_flags & DIFF_FLAG_IMU_IMPLAUSIBLE) != 0,
+                  "Fuzzing: IMU curb shock triggers DIFF_FLAG_IMU_IMPLAUSIBLE");
+
+            // Verify torque step is benign
+            const float diff_post_curb = fabsf(out.torque_left_nm - out.torque_right_nm);
+            CHECK(diff_post_curb < 15.0f, "Fuzzing: Curb shock does not produce violent yaw step");
+        }
+
+        // 4.2 Bosch LWS Impossible Step Jump Glitch
+        {
+            DiffState state;
+            electronic_diff_init(&state);
+            DiffInputs in{};
+            in.dt_s = 0.010f;
+            in.vehicle_speed_mps = 15.0f;
+            in.steering_wheel_angle_rad = 0.60f; // Hard left
+            in.steering_angle_valid = true;
+            in.total_torque_demand_nm = 40.0f;
+            in.is_dv_mode = false;
+            in.now_ms = 5000;
+            DiffOutputs out{};
+
+            for (int i = 0; i < 20; ++i) {
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+            }
+            const float prev_left = out.torque_left_nm;
+            const float prev_right = out.torque_right_nm;
+
+            // Sensor glitches to opposite lock in a single 10ms frame
+            in.steering_wheel_angle_rad = -0.60f;
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+
+            const float step_l = fabsf(out.torque_left_nm - prev_left);
+            const float step_r = fabsf(out.torque_right_nm - prev_right);
+            const float max_allowed_step = cfg.limits.max_slew_rate_nm_s * in.dt_s * 2.5f + 0.1f;
+            CHECK(step_l <= max_allowed_step && step_r <= max_allowed_step,
+                  "Fuzzing: Glitch step is bounded by mechanical slew rate limiter");
+        }
+    }
+
+    // 5. Extreme Split-Mu Wheel Slip (Virtual LSD + TCS Co-Action)
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 10.0f;
+        in.steering_wheel_angle_rad = 0.35f; // Left turn (right wheel outside, left inside)
+        in.steering_angle_valid = true;
+        in.wheel_speeds_valid = true;
+        in.total_torque_demand_nm = 45.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 6000;
+
+        // Normal speeds before split-mu
+        in.left_wheel_speed_rads = 10.0f / cfg.vehicle.wheel_radius_m;
+        in.right_wheel_speed_rads = 10.0f / cfg.vehicle.wheel_radius_m;
+        DiffOutputs out{};
+
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        const float normal_t_left = out.torque_left_nm;
+
+        // Inside wheel hits wet paint line / loose surface: wheel speed spikes to 150 rad/s
+        in.left_wheel_speed_rads = 150.0f;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+
+        CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0 || (out.diag_flags & DIFF_FLAG_TCS_ACTIVE) != 0,
+              "Split-Mu: Virtual LSD and/or TCS trigger on extreme wheel spin");
+        CHECK(out.torque_left_nm < normal_t_left * 0.6f,
+              "Split-Mu: Slipping wheel torque trimmed significantly to prevent spinup");
+        CHECK(out.torque_right_nm > out.torque_left_nm,
+              "Split-Mu: Gripping outside wheel continues to drive the vehicle");
+    }
+
+    // 6. Mechanical Slew-Rate Protection & Instant Driver Lift-off
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 14.0f;
+        in.steering_wheel_angle_rad = 0.0f;
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 0.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 7000;
+        DiffOutputs out{};
+
+        // Step 1: 0% to 100% full throttle stomp
+        in.total_torque_demand_nm = 60.0f;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+
+        const float max_up_step = cfg.limits.max_slew_rate_nm_s * in.dt_s + 0.1f;
+        CHECK(out.torque_left_nm <= max_up_step && out.torque_right_nm <= max_up_step,
+              "Slew-Rate: Throttle stomp is rate-limited per tick to protect drivetrain");
+
+        // Let it settle up to full torque
+        for (int i = 0; i < 30; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_left_nm > 25.0f, "Slew-Rate: Full torque reached");
+
+        // Step 2: Driver completely lifts off accelerator (0 Nm demand)
+        in.total_torque_demand_nm = 0.0f;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+
+        CHECK(out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "Slew-Rate: Driver lift-off bypasses slew-rate down-ramp: instant 0 ms safety cut");
+    }
+}
+
 static void run_all() {
     test_fsae_scrutineering_and_race_limits();
     test_electronic_differential_stress_matrix();
@@ -3930,6 +4187,7 @@ static void run_all() {
     test_radio_snapshot();
     test_gps();
     test_electronic_differential();
+    test_electronic_diff_advanced_safety_and_edge_cases();
 }
 
 int main(int argc, char** argv) {
@@ -3976,7 +4234,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(m, "--test-dv-mode"))            test_dv_mode();
     else if (!std::strcmp(m, "--test-radio"))              test_radio_snapshot();
     else if (!std::strcmp(m, "--test-gps"))                test_gps();
-    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); test_fsae_scrutineering_and_race_limits(); }
+    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); test_fsae_scrutineering_and_race_limits(); test_electronic_diff_advanced_safety_and_edge_cases(); }
     else                                                   run_all();  // --test-integration / --test-all / default
 
     std::printf("=== %d checks, %d failed ===\n", g_checks, g_fails);
