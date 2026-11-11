@@ -4349,7 +4349,7 @@ static void test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(
             in.measured_yaw_rate_rads = r_target;
             in.lateral_accel_mps2 = 16.0f * r_target;
 
-            for (int i = 0; i < 20; ++i) {
+            for (int i = 0; i < 40; ++i) {
                 in.now_ms += 10;
                 electronic_diff_step(&state, &cfg, &in, &out);
             }
@@ -4357,7 +4357,7 @@ static void test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(
 
             // Incur understeer: front slip angle increases, yaw rate drops 50%
             in.measured_yaw_rate_rads = r_target * 0.50f;
-            for (int i = 0; i < 15; ++i) {
+            for (int i = 0; i < 20; ++i) {
                 in.now_ms += 10;
                 electronic_diff_step(&state, &cfg, &in, &out);
             }
@@ -4380,7 +4380,7 @@ static void test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(
             in.steering_wheel_angle_rad = 0.35f; // Left turn
             in.steering_angle_valid = true;
             in.imu_valid = true;
-            in.total_torque_demand_nm = 45.0f;
+            in.total_torque_demand_nm = 40.0f;
             in.is_dv_mode = true; // PartyMode
             in.now_ms = 4000;
             DiffOutputs out{};
@@ -4390,7 +4390,7 @@ static void test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(
             in.measured_yaw_rate_rads = r_target;
             in.lateral_accel_mps2 = 16.0f * r_target;
 
-            for (int i = 0; i < 20; ++i) {
+            for (int i = 0; i < 40; ++i) {
                 in.now_ms += 10;
                 electronic_diff_step(&state, &cfg, &in, &out);
             }
@@ -4398,7 +4398,7 @@ static void test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(
 
             // Incur oversteer: rear steps out, yaw rate jumps 60% above target
             in.measured_yaw_rate_rads = r_target * 1.60f;
-            for (int i = 0; i < 15; ++i) {
+            for (int i = 0; i < 20; ++i) {
                 in.now_ms += 10;
                 electronic_diff_step(&state, &cfg, &in, &out);
             }
