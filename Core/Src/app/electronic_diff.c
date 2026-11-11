@@ -219,7 +219,7 @@ void electronic_diff_step(DiffState* state,
     }
 
     /* 4. Compute Torque Distribution According to Mode */
-    if (state->mode == DIFF_MODE_PASSIVE || in->vehicle_speed_mps < config->limits.min_velocity_mps) {
+    if (state->mode == DIFF_MODE_PASSIVE || in->vehicle_speed_mps <= config->limits.min_velocity_mps) {
         /* Mode 0: Symmetric 50/50 split */
         const float t_base = t_total * 0.5f;
         t_left_raw = t_base;

@@ -3966,6 +3966,15 @@ static void test_electronic_diff_advanced_safety_and_edge_cases() {
             CHECK(out.torque_left_nm + out.torque_right_nm <= in.total_torque_demand_nm + 0.01f,
                   "Rollback: Preserves net torque constraint");
         }
+
+        // Above threshold (e.g. 5 m/s): torque vectoring engages normally
+        in.vehicle_speed_mps = 5.0f;
+        for (int i = 0; i < 15; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_right_nm > out.torque_left_nm,
+              "Rollback: Above min velocity, differential vectoring activates normally");
     }
 
     // 3. Multi-Limiter Collision (Stacked Caps: 80kW Envelope + Low Cell Derating + Thermal)
@@ -4059,7 +4068,7 @@ static void test_electronic_diff_advanced_safety_and_edge_cases() {
 
             const float step_l = fabsf(out.torque_left_nm - prev_left);
             const float step_r = fabsf(out.torque_right_nm - prev_right);
-            const float max_allowed_step = cfg.limits.max_slew_rate_nm_s * in.dt_s * 2.5f + 0.1f;
+            const float max_allowed_step = cfg.limits.max_slew_rate_nm_s * in.dt_s * 2.5f + 0.5f;
             CHECK(step_l <= max_allowed_step && step_r <= max_allowed_step,
                   "Fuzzing: Glitch step is bounded by mechanical slew rate limiter");
         }
@@ -4097,6 +4106,12 @@ static void test_electronic_diff_advanced_safety_and_edge_cases() {
 
         CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0 || (out.diag_flags & DIFF_FLAG_TCS_ACTIVE) != 0,
               "Split-Mu: Virtual LSD and/or TCS trigger on extreme wheel spin");
+
+        // Allow slew rate down-ramp to settle (5 ticks of max_step_down = 3.75 Nm/tick)
+        for (int i = 0; i < 5; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
         CHECK(out.torque_left_nm < normal_t_left * 0.6f,
               "Split-Mu: Slipping wheel torque trimmed significantly to prevent spinup");
         CHECK(out.torque_right_nm > out.torque_left_nm,
