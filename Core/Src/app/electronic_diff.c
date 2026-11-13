@@ -74,11 +74,11 @@ static void apply_beta_observer_and_spin_guard(DiffState* state,
         /* Apply stabilizing counter-moment opposing slip velocity */
         const float counter_bias = 5.0f;
         if (state->side_slip_beta_rad > 0.0f) {
-            *t_left_raw  += counter_bias;
-            *t_right_raw -= counter_bias;
-        } else {
             *t_left_raw  -= counter_bias;
             *t_right_raw += counter_bias;
+        } else {
+            *t_left_raw  += counter_bias;
+            *t_right_raw -= counter_bias;
         }
     }
 }
@@ -441,7 +441,9 @@ void electronic_diff_step(DiffState* state,
         t_left_raw  = t_base_left - delta_t_tv;
         t_right_raw = t_base_right + delta_t_tv;
 
-        /* 4.3 Vehicle side-slip angle (beta) observer & emergency spin protection */
+        /* 4.3 Virtual LSD differential slip protection + side-slip (beta) observer */
+        const float tan_delta_party = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
+        apply_virtual_lsd(config, in, tan_delta_party, &t_left_raw, &t_right_raw, out);
         apply_beta_observer_and_spin_guard(state, config, in, dt, &t_left_raw, &t_right_raw, out);
     }
 
