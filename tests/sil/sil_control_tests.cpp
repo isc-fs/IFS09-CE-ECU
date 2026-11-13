@@ -4531,7 +4531,7 @@ static void test_electronic_diff_pre_assembly_validation() {
             in.steering_wheel_angle_rad = 0.20f; // ~11.5 deg steering wheel (high-speed cornering within grip)
             in.steering_angle_valid = true;
             in.imu_valid = true;
-            in.total_torque_demand_nm = 40.0f;
+            in.total_torque_demand_nm = 20.0f;
             in.is_dv_mode = true; // PartyMode closed-loop
             in.now_ms = 1000;
 
