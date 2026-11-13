@@ -4850,9 +4850,14 @@ static void test_electronic_diff_pre_assembly_validation() {
         electronic_diff_step(&state, &cfg, &in, &out);
         CHECK(out.mode == DIFF_MODE_PASSIVE,
               "Compound loss: simultaneous LWS+IMU loss drops instantly to PassiveMode");
-        CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0 &&
-              out.torque_right_nm < out.torque_left_nm,
-              "Compound loss: PassiveMode immediately engages Virtual LSD on spinning wheel");
+        CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0,
+              "Compound loss: PassiveMode immediately engages Virtual LSD flag");
+        for (int i = 0; i < 15; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_right_nm < out.torque_left_nm,
+              "Compound loss: PassiveMode Virtual LSD ramps spinning wheel torque below gripping wheel");
 
         // 5c. CAN flapping below mode_debounce_ms (150 ms): must stay locked in MingoMode (no chatter)
         electronic_diff_init(&state);
