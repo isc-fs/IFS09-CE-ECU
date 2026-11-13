@@ -4640,7 +4640,7 @@ static void test_electronic_diff_pre_assembly_validation() {
             in.now_ms += 10;
             electronic_diff_step(&state, &cfg, &in, &out);
         }
-        CHECK(state.mode == DIFF_MODE_PASSIVE, "Jack-stand: remains PASSIVE at v_x=0");
+        CHECK(state.pid_integral_nm == 0.0f && fabsf(out.delta_torque_nm) < 1e-4f, "Jack-stand: zero integral and delta torque at v_x=0");
         CHECK(fabsf(out.torque_left_nm - out.torque_right_nm) < 1e-4f,
               "Jack-stand: exact 50/50 split despite wheel speed asymmetry");
         CHECK((out.diag_flags & (DIFF_FLAG_LSD_ACTIVE | DIFF_FLAG_TCS_ACTIVE)) == 0,
