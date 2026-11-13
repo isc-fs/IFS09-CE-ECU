@@ -10,6 +10,9 @@
 #define GRAVITY_MPS2 9.80665f
 
 static float clampf(float val, float min_val, float max_val) {
+    if (!isfinite(val)) {
+        return (min_val <= 0.0f && max_val >= 0.0f) ? 0.0f : min_val;
+    }
     if (val < min_val) return min_val;
     if (val > max_val) return max_val;
     return val;
@@ -140,6 +143,21 @@ void electronic_diff_step(DiffState* state,
 
     const float dt = (in->dt_s > 1e-4f && in->dt_s < 0.5f) ? in->dt_s : 0.010f;
 
+    /* Sanitize primary kinematic/demand inputs against NaN/Inf bus corruption */
+    if (!isfinite(in->total_torque_demand_nm) ||
+        !isfinite(in->vehicle_speed_mps) ||
+        !isfinite(in->steering_wheel_angle_rad)) {
+        state->mode = DIFF_MODE_PASSIVE;
+        state->imu_healthy_start_ms = 0;
+        state->pid_integral_nm = 0.0f;
+        state->last_yaw_error_rads = 0.0f;
+        state->last_derivative_nm = 0.0f;
+        state->last_torque_left_nm = 0.0f;
+        state->last_torque_right_nm = 0.0f;
+        out->diag_flags |= DIFF_FLAG_STEER_TIMEOUT;
+        return;
+    }
+
     /* Base driver torque validation (Formula Student APPS compliance) */
     float t_total = in->total_torque_demand_nm;
     if (t_total < 0.0f) t_total = 0.0f;
@@ -161,7 +179,12 @@ void electronic_diff_step(DiffState* state,
     /* 2. Sensor Fusion & Plausibility Guards:
      * Kinematic plausibility check on IMU: a_y ~ v_x * r in steady-state.
      * If discrepancy exceeds imu_plausibility_diff_mps2, treat IMU as corrupted. */
-    bool imu_plausible = in->imu_valid;
+    bool imu_plausible = in->imu_valid &&
+                         isfinite(in->measured_yaw_rate_rads) &&
+                         isfinite(in->lateral_accel_mps2);
+    if (in->imu_valid && !imu_plausible) {
+        out->diag_flags |= DIFF_FLAG_IMU_IMPLAUSIBLE;
+    }
     if (imu_plausible && fabsf(in->vehicle_speed_mps) > 2.0f) {
         const float ay_expected = in->vehicle_speed_mps * in->measured_yaw_rate_rads;
         const float ay_diff = fabsf(in->lateral_accel_mps2 - ay_expected);
@@ -214,7 +237,9 @@ void electronic_diff_step(DiffState* state,
 
     /* Cap to maximum allowable motor torque (physical or power-envelope) */
     float motor_cap = config->vehicle.motor_max_torque_nm;
-    if (in->max_motor_torque_limit_nm > 0.1f && in->max_motor_torque_limit_nm < motor_cap) {
+    if (isfinite(in->max_motor_torque_limit_nm) &&
+        in->max_motor_torque_limit_nm > 0.1f &&
+        in->max_motor_torque_limit_nm < motor_cap) {
         motor_cap = in->max_motor_torque_limit_nm;
     }
 
@@ -240,7 +265,7 @@ void electronic_diff_step(DiffState* state,
         /* Dynamic feedforward based on steering wheel angular velocity:
          * Provides crisp turn-in yaw assist without closed-loop hunting or driver fight */
         float delta_t_dynamic = 0.0f;
-        if (config->vehicle.k_steer_speed_feedforward > 0.0f && in->steering_angle_valid) {
+        if (config->vehicle.k_steer_speed_feedforward > 0.0f && in->steering_angle_valid && isfinite(in->steering_wheel_speed_rad_s)) {
             const float steer_rate_rads = (config->vehicle.steer_ratio > 0.01f)
                 ? (in->steering_wheel_speed_rad_s / config->vehicle.steer_ratio)
                 : 0.0f;
@@ -261,7 +286,7 @@ void electronic_diff_step(DiffState* state,
         t_right_raw = t_base + delta_t;
 
         /* Virtual LSD with ERPM telemetry feedback */
-        if (in->wheel_speeds_valid) {
+        if (in->wheel_speeds_valid && isfinite(in->left_wheel_speed_rads) && isfinite(in->right_wheel_speed_rads)) {
             const float omega_mean = (in->left_wheel_speed_rads + in->right_wheel_speed_rads) * 0.5f;
             if (omega_mean > 5.0f) {
                 const float delta_omega_expected = omega_mean * (config->vehicle.track_width_rear_m / config->vehicle.wheelbase_m) * tan_delta;
@@ -381,7 +406,7 @@ void electronic_diff_step(DiffState* state,
     }
 
     /* 5. Active Traction Control (TCS) Slip Ratio Limiter */
-    if (in->wheel_speeds_valid && in->vehicle_speed_mps > 0.5f) {
+    if (in->wheel_speeds_valid && isfinite(in->left_wheel_speed_rads) && isfinite(in->right_wheel_speed_rads) && in->vehicle_speed_mps > 0.5f) {
         const float v_ref = (in->vehicle_speed_mps > 1.0f) ? in->vehicle_speed_mps : 1.0f;
         const float v_wheel_l = in->left_wheel_speed_rads * config->vehicle.wheel_radius_m;
         const float v_wheel_r = in->right_wheel_speed_rads * config->vehicle.wheel_radius_m;

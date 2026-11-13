@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <cmath>
 #include <cstring>
 
 #include "app/control.hpp"
@@ -4448,6 +4449,320 @@ static void test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(
     }
 }
 
+static void test_electronic_diff_pre_assembly_validation() {
+    std::printf("[electronic_diff_pre_assembly_validation]\n");
+    const DiffConfig cfg = diff_config_get_default();
+
+    // 1. Monte Carlo Parameter Uncertainty Sweep (2-DOF Closed-Loop Plant)
+    // Validates stability when real car mass, tire mu, and weight/roll distribution
+    // differ by +/-25-30% from pre-build estimates in differential_config.c.
+    {
+        struct PlantCase {
+            const char* name;
+            float mass_kg;
+            float mu;
+            float rear_ratio;
+        };
+        const PlantCase cases[] = {
+            {"Nominal",              310.0f, 1.35f, 0.42f},
+            {"Heavy (+25%)",         387.5f, 1.35f, 0.42f},
+            {"Light (-20%)",         248.0f, 1.35f, 0.42f},
+            {"Cold tires (mu=0.75)", 310.0f, 0.75f, 0.42f},
+            {"Sticky + Rear shift",  330.0f, 1.50f, 0.52f},
+            {"Front-heavy shift",    310.0f, 1.10f, 0.32f},
+        };
+
+        for (const PlantCase& pc : cases) {
+            DiffState state;
+            electronic_diff_init(&state);
+            DiffInputs in{};
+            DiffOutputs out{};
+
+            const float vx = 16.0f;
+            const float L = cfg.vehicle.wheelbase_m;
+            const float lr = L * (1.0f - pc.rear_ratio);
+            const float lf = L - lr;
+            const float Iz = pc.mass_kg * 0.45f;
+            const float g = 9.80665f;
+            const float fzf = pc.mass_kg * g * (lr / L);
+            const float fzr = pc.mass_kg * g * (lf / L);
+            const float cf = 26000.0f * (pc.mu / 1.35f);
+            const float cr = 28000.0f * (pc.mu / 1.35f);
+            const float dt = 0.010f;
+
+            float r = 0.0f;
+            float vy = 0.0f;
+            float ay = 0.0f;
+            float r_ss_min = 1e6f;
+            float r_ss_max = -1e6f;
+            bool all_finite = true;
+            bool invariant_ok = true;
+            bool bounded_yaw = true;
+
+            in.dt_s = dt;
+            in.vehicle_speed_mps = vx;
+            in.steering_wheel_angle_rad = 0.35f; // ~20 deg steering wheel
+            in.steering_angle_valid = true;
+            in.imu_valid = true;
+            in.total_torque_demand_nm = 40.0f;
+            in.is_dv_mode = true; // PartyMode closed-loop
+            in.now_ms = 1000;
+
+            for (int step = 0; step < 150; ++step) {
+                in.now_ms += 10;
+                in.measured_yaw_rate_rads = r;
+                in.lateral_accel_mps2 = ay;
+
+                electronic_diff_step(&state, &cfg, &in, &out);
+
+                if (!std::isfinite(out.torque_left_nm) || !std::isfinite(out.torque_right_nm) ||
+                    !std::isfinite(out.delta_torque_nm)) {
+                    all_finite = false;
+                }
+                if (out.torque_left_nm + out.torque_right_nm > in.total_torque_demand_nm + 0.05f) {
+                    invariant_ok = false;
+                }
+
+                // Step 2-DOF plant
+                const float delta = in.steering_wheel_angle_rad / cfg.vehicle.steer_ratio;
+                const float alpha_f = delta - (vy + lf * r) / vx;
+                const float alpha_r = -(vy - lr * r) / vx;
+                const float fyf = (pc.mu * fzf) * tanhf((cf * alpha_f) / (pc.mu * fzf + 1.0f));
+                const float fyr = (pc.mu * fzr) * tanhf((cr * alpha_r) / (pc.mu * fzr + 1.0f));
+                const float mz_tv = (out.torque_right_nm - out.torque_left_nm) *
+                                    (cfg.vehicle.gear_ratio / cfg.vehicle.wheel_radius_m) *
+                                    (cfg.vehicle.track_width_rear_m * 0.5f);
+
+                const float r_dot = (lf * fyf - lr * fyr + mz_tv) / Iz;
+                const float vy_dot = (fyf + fyr) / pc.mass_kg - vx * r;
+                r += r_dot * dt;
+                vy += vy_dot * dt;
+                ay = (fyf + fyr) / pc.mass_kg;
+
+                if (fabsf(r) > 3.0f) bounded_yaw = false;
+                if (step >= 120) {
+                    if (r < r_ss_min) r_ss_min = r;
+                    if (r > r_ss_max) r_ss_max = r;
+                }
+            }
+
+            CHECK(all_finite, "MonteCarlo 2-DOF: outputs finite");
+            CHECK(invariant_ok, "MonteCarlo 2-DOF: net torque invariant holds");
+            CHECK(bounded_yaw, "MonteCarlo 2-DOF: yaw rate bounded (no divergence)");
+            CHECK((r_ss_max - r_ss_min) < 0.25f, "MonteCarlo 2-DOF: steady-state yaw settles without oscillation");
+        }
+    }
+
+    // 2. First-Assembly Wiring, Polarity & Offset Hazards
+    {
+        // 2a. LWS Zero-Offset Misalignment (+4 deg uncalibrated straight-line launch)
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        DiffOutputs out{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 12.0f;
+        in.steering_wheel_angle_rad = 4.0f * (3.14159265f / 180.0f);
+        in.steering_angle_valid = true;
+        in.total_torque_demand_nm = 40.0f;
+        in.is_dv_mode = false;
+        in.now_ms = 2000;
+        for (int i = 0; i < 30; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.torque_left_nm + out.torque_right_nm <= 40.02f, "LWS offset: net torque preserved");
+        CHECK(fabsf(out.delta_torque_nm) < cfg.limits.max_delta_torque_nm, "LWS offset: differential torque bounded");
+
+        // 2b. IMU Polarity Inversion (yaw_rate sign flipped vs lateral_accel)
+        electronic_diff_init(&state);
+        in.vehicle_speed_mps = 16.0f;
+        in.steering_wheel_angle_rad = 0.35f;
+        in.imu_valid = true;
+        in.is_dv_mode = true;
+        in.lateral_accel_mps2 = 8.0f;
+        in.measured_yaw_rate_rads = -0.50f; // |8 - (-8)| = 16 > 15 m/s^2
+        for (int i = 0; i < 25; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK((out.diag_flags & DIFF_FLAG_IMU_IMPLAUSIBLE) != 0, "IMU polarity flip: triggers DIFF_FLAG_IMU_IMPLAUSIBLE");
+        CHECK(state.mode != DIFF_MODE_PARTY, "IMU polarity flip: blocks PartyMode closed-loop");
+
+        // 2c. Manual Shakedown Protection (enable_party_mode_in_manual == false ignores wild IMU)
+        DiffState s_clean, s_noisy;
+        electronic_diff_init(&s_clean);
+        electronic_diff_init(&s_noisy);
+        DiffInputs in_clean{}, in_noisy{};
+        DiffOutputs out_clean{}, out_noisy{};
+        in_clean.dt_s = in_noisy.dt_s = 0.010f;
+        in_clean.vehicle_speed_mps = in_noisy.vehicle_speed_mps = 15.0f;
+        in_clean.steering_wheel_angle_rad = in_noisy.steering_wheel_angle_rad = 0.30f;
+        in_clean.steering_angle_valid = in_noisy.steering_angle_valid = true;
+        in_clean.imu_valid = in_noisy.imu_valid = true;
+        in_clean.total_torque_demand_nm = in_noisy.total_torque_demand_nm = 30.0f;
+        in_clean.is_dv_mode = in_noisy.is_dv_mode = false; // Manual
+        in_clean.measured_yaw_rate_rads = 0.5f;
+        in_clean.lateral_accel_mps2 = 7.5f;
+        in_noisy.measured_yaw_rate_rads = 5.0f;   // Corrupted spike
+        in_noisy.lateral_accel_mps2 = -30.0f;     // Corrupted spike
+        for (int i = 0; i < 25; ++i) {
+            in_clean.now_ms += 10;
+            in_noisy.now_ms += 10;
+            electronic_diff_step(&s_clean, &cfg, &in_clean, &out_clean);
+            electronic_diff_step(&s_noisy, &cfg, &in_noisy, &out_noisy);
+        }
+        CHECK(s_noisy.mode == DIFF_MODE_MINGO, "Manual shakedown: locked to MingoMode");
+        CHECK(fabsf(out_clean.torque_left_nm - out_noisy.torque_left_nm) < 1e-4f &&
+              fabsf(out_clean.torque_right_nm - out_noisy.torque_right_nm) < 1e-4f,
+              "Manual shakedown: wild IMU spikes do not affect torque output");
+    }
+
+    // 3. Workshop Jack-Stand Commissioning (Caballetes) & Shakedown Cap
+    {
+        // 3a. Jack-stand spin: v_x = 0, wheels spinning fast & asymmetrically
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        DiffOutputs out{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 0.0f;
+        in.steering_wheel_angle_rad = 0.40f;
+        in.steering_angle_valid = true;
+        in.imu_valid = true;
+        in.wheel_speeds_valid = true;
+        in.left_wheel_speed_rads = 40.0f;  // > 5.0f LSD threshold
+        in.right_wheel_speed_rads = 55.0f; // Asymmetric free spin
+        in.total_torque_demand_nm = 20.0f;
+        in.is_dv_mode = true;
+        in.now_ms = 3000;
+        for (int i = 0; i < 25; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(state.mode == DIFF_MODE_PASSIVE, "Jack-stand: remains PASSIVE at v_x=0");
+        CHECK(fabsf(out.torque_left_nm - out.torque_right_nm) < 1e-4f,
+              "Jack-stand: exact 50/50 split despite wheel speed asymmetry");
+        CHECK((out.diag_flags & (DIFF_FLAG_LSD_ACTIVE | DIFF_FLAG_TCS_ACTIVE)) == 0,
+              "Jack-stand: Virtual LSD and TCS stay inactive");
+
+        // 3b. Low-speed threshold sweep across min_velocity_mps (0.80 m/s)
+        const float speeds[] = {0.40f, 0.60f, 0.80f, 0.85f, 0.78f};
+        electronic_diff_init(&state);
+        in.left_wheel_speed_rads = 4.0f;
+        in.right_wheel_speed_rads = 4.0f;
+        for (float v : speeds) {
+            in.vehicle_speed_mps = v;
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+            if (v <= cfg.limits.min_velocity_mps) {
+                CHECK(fabsf(out.torque_left_nm - out.torque_right_nm) < 1e-4f,
+                      "Low-speed sweep: exact 50/50 when v <= min_velocity_mps");
+            }
+        }
+
+        // 3c. Shakedown cap (max_motor_torque_limit_nm = 8.0 Nm)
+        electronic_diff_init(&state);
+        in.vehicle_speed_mps = 15.0f;
+        in.steering_wheel_angle_rad = 30.0f * (3.14159265f / 180.0f);
+        in.total_torque_demand_nm = 16.0f;
+        in.max_motor_torque_limit_nm = 8.0f;
+        in.is_dv_mode = false;
+        bool cap_respected = true;
+        for (int i = 0; i < 30; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+            if (out.torque_left_nm > 8.01f || out.torque_right_nm > 8.01f) {
+                cap_respected = false;
+            }
+        }
+        CHECK(cap_respected, "Shakedown cap: both motors strictly capped at 8.0 Nm");
+    }
+
+    // 4. Bus Corruption (NaN / Inf) & RTOS dt Jitter
+    {
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        DiffOutputs out{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 15.0f;
+        in.steering_wheel_angle_rad = 0.25f;
+        in.steering_angle_valid = true;
+        in.imu_valid = true;
+        in.wheel_speeds_valid = true;
+        in.left_wheel_speed_rads = 73.0f;
+        in.right_wheel_speed_rads = 74.0f;
+        in.measured_yaw_rate_rads = 0.4f;
+        in.lateral_accel_mps2 = 6.0f;
+        in.total_torque_demand_nm = 30.0f;
+        in.is_dv_mode = true;
+        in.now_ms = 4000;
+
+        // Warm up into PartyMode
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+
+        // Inject NaN / Inf into each channel one by one
+        const float nan_val = std::nanf("");
+        const float inf_val = INFINITY;
+
+        DiffInputs bad = in;
+        bad.total_torque_demand_nm = nan_val;
+        bad.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &bad, &out);
+        CHECK(std::isfinite(out.torque_left_nm) && std::isfinite(out.torque_right_nm) &&
+              out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "NaN guard: NaN torque demand fails safe to 0 Nm");
+
+        bad = in;
+        bad.steering_wheel_angle_rad = inf_val;
+        bad.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &bad, &out);
+        CHECK(std::isfinite(out.torque_left_nm) && std::isfinite(out.torque_right_nm) &&
+              out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "Inf guard: Inf steering angle fails safe to 0 Nm");
+
+        bad = in;
+        bad.measured_yaw_rate_rads = nan_val;
+        bad.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &bad, &out);
+        CHECK(std::isfinite(out.torque_left_nm) && std::isfinite(out.torque_right_nm) &&
+              (out.diag_flags & DIFF_FLAG_IMU_IMPLAUSIBLE) != 0,
+              "NaN guard: NaN IMU yaw rate flags implausible and stays finite");
+
+        bad = in;
+        bad.left_wheel_speed_rads = nan_val;
+        bad.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &bad, &out);
+        CHECK(std::isfinite(out.torque_left_nm) && std::isfinite(out.torque_right_nm),
+              "NaN guard: NaN wheel speed stays finite");
+
+        // Clean recovery after bus corruption
+        in.now_ms = bad.now_ms + 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK(std::isfinite(out.torque_left_nm) && std::isfinite(out.torque_right_nm) &&
+              out.torque_left_nm >= 0.0f && out.torque_right_nm >= 0.0f,
+              "NaN recovery: clean tick after corruption produces valid finite torque");
+
+        // RTOS dt jitter
+        const float dts[] = {0.002f, 0.010f, 0.025f, 0.0f, 1.0f, nan_val, 0.010f};
+        bool jitter_ok = true;
+        for (float dt_j : dts) {
+            in.dt_s = dt_j;
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+            if (!std::isfinite(out.torque_left_nm) || !std::isfinite(out.torque_right_nm) ||
+                out.torque_left_nm + out.torque_right_nm > in.total_torque_demand_nm + 0.05f) {
+                jitter_ok = false;
+            }
+        }
+        CHECK(jitter_ok, "RTOS dt jitter: out-of-range/NaN dt_s falls back cleanly");
+    }
+}
+
 static void run_all() {
     test_fsae_scrutineering_and_race_limits();
     test_electronic_differential_stress_matrix();
@@ -4495,6 +4810,7 @@ static void run_all() {
     test_electronic_diff_advanced_safety_and_edge_cases();
     test_electronic_diff_party_mingo_party_transitions();
     test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions();
+    test_electronic_diff_pre_assembly_validation();
 }
 
 int main(int argc, char** argv) {
@@ -4541,7 +4857,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(m, "--test-dv-mode"))            test_dv_mode();
     else if (!std::strcmp(m, "--test-radio"))              test_radio_snapshot();
     else if (!std::strcmp(m, "--test-gps"))                test_gps();
-    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); test_fsae_scrutineering_and_race_limits(); test_electronic_diff_advanced_safety_and_edge_cases(); test_electronic_diff_party_mingo_party_transitions(); test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(); }
+    else if (!std::strcmp(m, "--test-diff"))             { test_electronic_differential(); test_electronic_differential_stress_matrix(); test_fsae_scrutineering_and_race_limits(); test_electronic_diff_advanced_safety_and_edge_cases(); test_electronic_diff_party_mingo_party_transitions(); test_electronic_diff_throttle_stomp_sweep_and_closed_loop_reactions(); test_electronic_diff_pre_assembly_validation(); }
     else                                                   run_all();  // --test-integration / --test-all / default
 
     std::printf("=== %d checks, %d failed ===\n", g_checks, g_fails);
