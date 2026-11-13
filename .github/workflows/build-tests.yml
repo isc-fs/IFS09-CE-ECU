@@ -57,7 +57,10 @@ jobs:
           flags="--test-all"
           fail=0
           for flag in $flags; do
-            out=$("$SIL" $flag 2>&1) ; code=$?
+            set +e
+            out=$("$SIL" $flag 2>&1)
+            code=$?
+            set -e
             # Defensive: trip on a non-zero exit OR any failure marker in the
             # output (some suites print failures without setting the exit code).
             if [ "$code" -ne 0 ] || printf '%s\n' "$out" \

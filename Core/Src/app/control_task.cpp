@@ -390,6 +390,7 @@ extern "C" void ecu_control_task_run(void *argument) {
             : 0.0f;
         diff_in.total_torque_demand_nm   = total_demand_nm;
         diff_in.steering_wheel_angle_rad = veh.diff_lws.steering_angle_rad;
+        diff_in.steering_wheel_speed_rad_s = veh.diff_lws.steering_speed_rad_s;
         diff_in.steering_angle_valid     = veh.diff_lws.valid &&
             VehicleService::is_fresh(now, veh.diff_lws.last_rx_timestamp_ms, diff_cfg.timeouts.steer_timeout_ms);
         diff_in.left_wheel_speed_rads    = veh.diff_inv_left.wheel_speed_rads;
@@ -413,6 +414,7 @@ extern "C" void ecu_control_task_run(void *argument) {
         diff_in.max_motor_torque_limit_nm= diff_cfg.vehicle.motor_max_torque_nm;
         diff_in.dt_s                     = 0.010f;
         diff_in.now_ms                   = now;
+        diff_in.is_dv_mode               = out.dv_mode;
 
         DiffOutputs diff_out{};
         if (out.state == CtrlState::Active) {

@@ -33,6 +33,8 @@ typedef struct {
     float    steering_angle_deg;       /**< Decoded steering wheel angle in degrees [deg] */
     float    steering_angle_rad;       /**< Decoded steering wheel angle in radians [rad] */
     float    steering_speed_deg_s;     /**< Steering angular velocity [deg/s] */
+    float    steering_speed_rad_s;     /**< Signed steering wheel angular velocity [rad/s] (positive = left) */
+    float    last_steering_angle_rad;  /**< Previous steering wheel angle for direction detection [rad] */
     uint8_t  status_code;              /**< Sensor health / calibration status code */
     bool     valid;                    /**< True if message healthy and checksum/status ok */
     uint32_t last_rx_timestamp_ms;     /**< System timestamp of last received frame */

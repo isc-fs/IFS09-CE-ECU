@@ -59,6 +59,7 @@ typedef enum {
 typedef struct {
     float    total_torque_demand_nm;  /**< Validated, rule-compliant driver total torque demand [Nm] */
     float    steering_wheel_angle_rad;/**< Measured steering wheel angle [rad] (positive = turn left) */
+    float    steering_wheel_speed_rad_s;/**< Measured steering wheel angular velocity [rad/s] (positive = left) */
     bool     steering_angle_valid;    /**< True if steering sensor data is fresh and healthy */
     float    vehicle_speed_mps;       /**< Vehicle longitudinal velocity v_x [m/s] */
     float    measured_yaw_rate_rads;  /**< Measured vehicle yaw rate r [rad/s] (positive = CCW / turn left) */
@@ -72,6 +73,7 @@ typedef struct {
     float    max_motor_torque_limit_nm;/**< External dynamic motor torque limit (e.g. power envelope) [Nm] */
     float    dt_s;                    /**< Timestep duration [s] (e.g. 0.010 for 10 ms) */
     uint32_t now_ms;                  /**< Current system timestamp [ms] */
+    bool     is_dv_mode;              /**< True if Autonomous/DV mode; false if manual seated driver */
 } DiffInputs;
 
 /**
@@ -88,6 +90,7 @@ typedef struct {
     float    yaw_rate_error_rads;     /**< Yaw rate tracking error e_r [rad/s] */
     float    yaw_moment_nm;           /**< Commanded corrective yaw moment M_z [Nm] */
     float    delta_torque_nm;         /**< Differential torque bias applied across rear wheels [Nm] */
+    float    delta_torque_speed_nm;   /**< Torque bias contributed by steering rate feedforward [Nm] */
     float    side_slip_angle_rad;     /**< Estimated vehicle side-slip angle beta [rad] */
     float    slip_ratio_left;         /**< Wheel slip ratio lambda_L */
     float    slip_ratio_right;        /**< Wheel slip ratio lambda_R */

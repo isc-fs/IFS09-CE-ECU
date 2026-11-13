@@ -146,21 +146,32 @@ void VehicleService::check_diff_timeouts(std::uint32_t now_ms, const DiffConfig&
 
 bool VehicleService::update_from_frame(const CanFrame& f) noexcept {
     // --- Electronic Differential CAN Frames (Bosch LWS, Xsens IMU, DTI Telemetry) ---
-    // Only processed on the inverter/sensor bus (FDCAN1) to prevent colliding with ACU frames (e.g. 0x021)
-    if (f.bus == static_cast<std::uint8_t>(CanBus::Inv)) {
-        static const DiffConfig diff_cfg = diff_config_get_default();
+    // Bosch LWS (0x2B0, 0x0C0) and IMU (0x201) are broadcast on the ACU bus (FDCAN2) or sensor bus (FDCAN1).
+    // DTI Inverter Telemetry (0x401, 0x402, etc.) is strictly on the Inverter bus (FDCAN1).
+    // Restricting DTI to Inv bus prevents colliding with ACU frames (e.g. 0x021).
+    static const DiffConfig diff_cfg = diff_config_get_default();
+    const bool is_inv_bus = (f.bus == static_cast<std::uint8_t>(CanBus::Inv));
+    const bool is_acu_bus = (f.bus == static_cast<std::uint8_t>(CanBus::Acu));
+
+    const bool is_lws_id = (!f.extended && (f.id == 0x2B0u || f.id == 0x0C0u || f.id == diff_cfg.can.lws_can_id));
+    const bool is_imu_id = (!f.extended && (f.id == 0x201u || f.id == diff_cfg.can.imu_can_id));
+    const bool is_dti_eligible = is_inv_bus;
+
+    if ((is_inv_bus || is_acu_bus) && (is_lws_id || is_imu_id || is_dti_eligible)) {
         if (electronic_diff_can_process_rx(&diff_cfg, f.id, f.extended != 0u, f.data, f.dlc, f.timestamp_ms,
                                            &state_.diff_lws, &state_.diff_imu,
                                            &state_.diff_inv_left, &state_.diff_inv_right)) {
-            // Only update legacy inverter mirrors on left-inverter ERPM frame (0x20)
-            uint8_t pkt_id = 0, node_id = 0;
-            electronic_diff_can_parse_dti_id(&diff_cfg, f.id, &pkt_id, &node_id);
-            if (node_id == diff_cfg.can.dti_left_node_id && pkt_id == diff_cfg.can.dti_pkt_telemetry_erpm) {
-                state_.last_inv_tick = f.timestamp_ms;
-                state_.inv_dc_bus_V = static_cast<std::uint16_t>(state_.diff_inv_left.input_voltage_v);
-                state_.inv_rpm = state_.diff_inv_left.erpm;
-                state_.last_vconfig_tick = f.timestamp_ms;
-                state_.last_inv_s4_tick = f.timestamp_ms;
+            if (is_inv_bus) {
+                // Only update legacy inverter mirrors on left-inverter ERPM frame (0x20)
+                uint8_t pkt_id = 0, node_id = 0;
+                electronic_diff_can_parse_dti_id(&diff_cfg, f.id, &pkt_id, &node_id);
+                if (node_id == diff_cfg.can.dti_left_node_id && pkt_id == diff_cfg.can.dti_pkt_telemetry_erpm) {
+                    state_.last_inv_tick = f.timestamp_ms;
+                    state_.inv_dc_bus_V = static_cast<std::uint16_t>(state_.diff_inv_left.input_voltage_v);
+                    state_.inv_rpm = state_.diff_inv_left.erpm;
+                    state_.last_vconfig_tick = f.timestamp_ms;
+                    state_.last_inv_s4_tick = f.timestamp_ms;
+                }
             }
             return true;
         }

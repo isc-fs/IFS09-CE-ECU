@@ -43,6 +43,9 @@ typedef struct {
     /** Roll stiffness distribution: K_roll,tras = k_phi,tras / (k_phi,del + k_phi,tras) = 733 / (1013 + 733) = 0.4198167 */
     float rear_roll_stiffness_ratio; /**< Fraction of lateral load transfer taken by rear axle (0.4198) */
     float road_friction_coeff;       /**< Estimated tire-road friction coefficient mu (1.350) */
+    bool  enable_party_mode_in_manual; /**< If false, manual driving is restricted to feedforward MingoMode */
+    float k_steer_speed_feedforward;   /**< Feedforward gain for steering wheel angular velocity [Nm / (rad/s)] */
+    float max_steer_speed_delta_nm;    /**< Maximum torque bias permitted from steering rate feedforward [Nm] */
 } DiffVehicleParams;
 
 /**
