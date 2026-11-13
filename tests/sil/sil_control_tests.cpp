@@ -4787,6 +4787,118 @@ static void test_electronic_diff_pre_assembly_validation() {
         }
         CHECK(jitter_ok, "RTOS dt jitter: out-of-range/NaN dt_s falls back cleanly");
     }
+
+    // 5. Compound Faults, CAN Flapping & Endurance uint32_t Wrap-Around
+    {
+        // 5a. Emergency beta spin guard + simultaneous single inverter fault
+        DiffState state;
+        electronic_diff_init(&state);
+        DiffInputs in{};
+        DiffOutputs out{};
+        in.dt_s = 0.010f;
+        in.vehicle_speed_mps = 16.0f;
+        in.steering_wheel_angle_rad = 0.30f;
+        in.steering_angle_valid = true;
+        in.imu_valid = true;
+        in.measured_yaw_rate_rads = 0.50f;
+        in.lateral_accel_mps2 = 8.0f;
+        in.total_torque_demand_nm = 40.0f;
+        in.is_dv_mode = false; // Manual PartyMode default
+        in.now_ms = 5000;
+
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        // Drive beta observer past beta_crit_rad (0.148 rad) with plausible high slip rate
+        in.measured_yaw_rate_rads = 1.40f;
+        in.lateral_accel_mps2 = 9.0f; // |9.0 - 22.4| = 13.4 < 15.0 (plausible)
+        for (int i = 0; i < 30; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK((out.diag_flags & DIFF_FLAG_EMERGENCY_SPIN) != 0,
+              "Compound fault setup: emergency spin guard active");
+
+        // Now inject right inverter fault while spin guard is firing counter_bias
+        in.inv_right_fault = true;
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK((out.diag_flags & DIFF_FLAG_ASYMMETRIC_FAULT) != 0 &&
+              out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
+              "Compound fault: asymmetric inverter fault overrides spin counter_bias to 0 Nm");
+
+        // 5b. Simultaneous LWS + IMU loss mid-corner with differential wheelspin -> instant Passive + Virtual LSD
+        electronic_diff_init(&state);
+        in.inv_right_fault = false;
+        in.measured_yaw_rate_rads = 0.50f;
+        in.lateral_accel_mps2 = 8.0f;
+        in.wheel_speeds_valid = true;
+        in.left_wheel_speed_rads = 78.4f;
+        in.right_wheel_speed_rads = 79.0f;
+        in.now_ms = 6000;
+        for (int i = 0; i < 20; ++i) {
+            in.now_ms += 10;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.mode == DIFF_MODE_PARTY, "Compound loss setup: in PartyMode");
+
+        in.steering_angle_valid = false;
+        in.imu_valid = false;
+        in.right_wheel_speed_rads = 110.0f; // +40% spin on right wheel
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK(out.mode == DIFF_MODE_PASSIVE,
+              "Compound loss: simultaneous LWS+IMU loss drops instantly to PassiveMode");
+        CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0 &&
+              out.torque_right_nm < out.torque_left_nm,
+              "Compound loss: PassiveMode immediately engages Virtual LSD on spinning wheel");
+
+        // 5c. CAN flapping below mode_debounce_ms (150 ms): must stay locked in MingoMode (no chatter)
+        electronic_diff_init(&state);
+        in.steering_angle_valid = true;
+        in.wheel_speeds_valid = false;
+        in.imu_valid = false;
+        in.now_ms = 7000;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        bool no_chatter = true;
+        for (int cycle = 0; cycle < 5; ++cycle) {
+            in.imu_valid = true;
+            for (int t = 0; t < 10; ++t) { // 100 ms < 150 ms debounce
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+                if (out.mode != DIFF_MODE_MINGO) no_chatter = false;
+            }
+            in.imu_valid = false;
+            for (int t = 0; t < 3; ++t) { // 30 ms dropout
+                in.now_ms += 10;
+                electronic_diff_step(&state, &cfg, &in, &out);
+                if (out.mode != DIFF_MODE_MINGO) no_chatter = false;
+            }
+        }
+        CHECK(no_chatter, "CAN flapping: <150 ms IMU bursts do not chatter into PartyMode");
+
+        // 5d. Endurance uint32_t now_ms wrap-around across 0xFFFFFFFF during 150 ms debounce
+        electronic_diff_init(&state);
+        in.imu_valid = false;
+        in.now_ms = 0xFFFFFF90u;
+        electronic_diff_step(&state, &cfg, &in, &out);
+        CHECK(out.mode == DIFF_MODE_MINGO, "Wrap-around setup: starts in MingoMode");
+
+        in.imu_valid = true;
+        for (int t = 0; t < 10; ++t) { // +100 ms -> crosses 0xFFFFFFFF into ~0x00000004
+            in.now_ms += 10u;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.mode == DIFF_MODE_MINGO, "Wrap-around: still debouncing at 100 ms across overflow");
+
+        for (int t = 0; t < 10; ++t) { // +100 ms more -> total 200 ms >= 150 ms
+            in.now_ms += 10u;
+            electronic_diff_step(&state, &cfg, &in, &out);
+        }
+        CHECK(out.mode == DIFF_MODE_PARTY,
+              "Wrap-around: cleanly promotes to PartyMode after uint32_t overflow");
+    }
 }
 
 static void run_all() {
