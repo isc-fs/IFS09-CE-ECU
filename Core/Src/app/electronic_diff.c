@@ -18,6 +18,71 @@ static float clampf(float val, float min_val, float max_val) {
     return val;
 }
 
+static void apply_virtual_lsd(const DiffConfig* config,
+                              const DiffInputs* in,
+                              float tan_delta,
+                              float* t_left_raw,
+                              float* t_right_raw,
+                              DiffOutputs* out) {
+    if (!in->wheel_speeds_valid ||
+        !isfinite(in->left_wheel_speed_rads) ||
+        !isfinite(in->right_wheel_speed_rads)) {
+        return;
+    }
+    const float omega_mean = (in->left_wheel_speed_rads + in->right_wheel_speed_rads) * 0.5f;
+    if (omega_mean <= 5.0f) {
+        return;
+    }
+    const float delta_omega_expected = omega_mean * (config->vehicle.track_width_rear_m / config->vehicle.wheelbase_m) * tan_delta;
+    const float delta_omega_measured = in->right_wheel_speed_rads - in->left_wheel_speed_rads;
+    const float slip_diff = delta_omega_measured - delta_omega_expected;
+    const float slip_thresh = config->limits.lsd_slip_threshold * omega_mean;
+
+    if (fabsf(slip_diff) > slip_thresh) {
+        out->diag_flags |= DIFF_FLAG_LSD_ACTIVE;
+        const float excess_slip = fabsf(slip_diff) - slip_thresh;
+        const float trim = excess_slip * config->limits.lsd_k_slip;
+
+        if (slip_diff > 0.0f) {
+            *t_right_raw -= trim;
+        } else {
+            *t_left_raw -= trim;
+        }
+    }
+}
+
+static void apply_beta_observer_and_spin_guard(DiffState* state,
+                                               const DiffConfig* config,
+                                               const DiffInputs* in,
+                                               float dt,
+                                               float* t_left_raw,
+                                               float* t_right_raw,
+                                               DiffOutputs* out) {
+    if (in->vehicle_speed_mps <= 1.5f) {
+        return;
+    }
+    const float d_beta = (in->lateral_accel_mps2 / in->vehicle_speed_mps) - in->measured_yaw_rate_rads;
+    /* Washout leakage prevents long-term integration drift */
+    state->side_slip_beta_rad = state->side_slip_beta_rad * (1.0f - 0.05f * dt) + d_beta * dt;
+    out->side_slip_angle_rad = state->side_slip_beta_rad;
+
+    if (fabsf(state->side_slip_beta_rad) > config->limits.beta_crit_rad) {
+        out->diag_flags |= DIFF_FLAG_EMERGENCY_SPIN;
+        /* Emergency spin stabilization: reduce total torque demand by 70% */
+        *t_left_raw  *= 0.30f;
+        *t_right_raw *= 0.30f;
+        /* Apply stabilizing counter-moment opposing slip velocity */
+        const float counter_bias = 5.0f;
+        if (state->side_slip_beta_rad > 0.0f) {
+            *t_left_raw  += counter_bias;
+            *t_right_raw -= counter_bias;
+        } else {
+            *t_left_raw  -= counter_bias;
+            *t_right_raw += counter_bias;
+        }
+    }
+}
+
 void electronic_diff_init(DiffState* state) {
     if (!state) return;
     state->mode                  = DIFF_MODE_PASSIVE;
@@ -143,10 +208,8 @@ void electronic_diff_step(DiffState* state,
 
     const float dt = (in->dt_s > 1e-4f && in->dt_s < 0.5f) ? in->dt_s : 0.010f;
 
-    /* Sanitize primary kinematic/demand inputs against NaN/Inf bus corruption */
-    if (!isfinite(in->total_torque_demand_nm) ||
-        !isfinite(in->vehicle_speed_mps) ||
-        !isfinite(in->steering_wheel_angle_rad)) {
+    /* Sanitize primary torque/speed inputs against NaN/Inf bus corruption */
+    if (!isfinite(in->total_torque_demand_nm) || !isfinite(in->vehicle_speed_mps)) {
         state->mode = DIFF_MODE_PASSIVE;
         state->imu_healthy_start_ms = 0;
         state->pid_integral_nm = 0.0f;
@@ -165,13 +228,12 @@ void electronic_diff_step(DiffState* state,
     /* 1. Steering angle calculation and safety check.
      * THE STEERING DROPOUT TRAP:
      * Never freeze or hold the last valid steering angle on sensor timeout.
-     * When LWS validity drops, fall back to PASSIVE 50/50 immediately. */
-    if (!in->steering_angle_valid) {
+     * Zero road_wheel_angle when LWS is invalid or non-finite. */
+    const bool steer_ok = in->steering_angle_valid && isfinite(in->steering_wheel_angle_rad);
+    if (!steer_ok) {
         out->diag_flags |= DIFF_FLAG_STEER_TIMEOUT;
-        state->mode = DIFF_MODE_PASSIVE;
-        state->imu_healthy_start_ms = 0;
     }
-    const float road_wheel_angle = (config->vehicle.steer_ratio > 0.01f)
+    const float road_wheel_angle = (steer_ok && config->vehicle.steer_ratio > 0.01f)
         ? (in->steering_wheel_angle_rad / config->vehicle.steer_ratio)
         : 0.0f;
     out->road_wheel_angle_rad = road_wheel_angle;
@@ -193,41 +255,44 @@ void electronic_diff_step(DiffState* state,
             out->diag_flags |= DIFF_FLAG_IMU_IMPLAUSIBLE;
         }
     }
+    const bool imu_ok = in->imu_valid && imu_plausible;
+    if (!in->imu_valid) {
+        out->diag_flags |= DIFF_FLAG_IMU_TIMEOUT;
+    }
 
     /* 3. Operating Mode Decision & Bump-less Debouncing:
-     * Manual driving restricts the differential to feedforward MingoMode (TV disabled)
-     * unless explicitly permitted by configuration. Closed-loop PartyMode is intended
-     * for autonomous / DV driving.
-     * Switching from PartyMode (closed loop) to MingoMode (open loop) is INSTANT.
-     * Returning to PartyMode is DEBOUNCED for mode_debounce_ms (150 ms) to avoid chatter. */
+     * - PartyMode: Default mode (Manual & DV) when LWS + IMU + inverters are healthy.
+     * - MingoMode: Partial sensor fault (either IMU OR LWS lost/implausible).
+     * - PassiveMode: Total sensor loss (both IMU AND LWS lost; inverter-only feedback).
+     * Degradation is INSTANT (0 ms). Recovery to PartyMode is DEBOUNCED (150 ms). */
     const bool allow_party_mode = in->is_dv_mode || config->vehicle.enable_party_mode_in_manual;
-    if (in->steering_angle_valid) {
-        if (in->imu_valid && imu_plausible && allow_party_mode) {
-            if (state->mode == DIFF_MODE_PARTY) {
-                /* Maintain closed-loop mode */
-            } else {
-                /* Debounce transition to PartyMode */
-                if (state->imu_healthy_start_ms == 0) {
-                    state->imu_healthy_start_ms = in->now_ms;
-                }
-                if ((in->now_ms - state->imu_healthy_start_ms) >= config->timeouts.mode_debounce_ms) {
-                    state->mode = DIFF_MODE_PARTY;
-                } else {
-                    state->mode = DIFF_MODE_MINGO;
-                    out->diag_flags |= DIFF_FLAG_FALLBACK_ACTIVE;
-                }
-            }
+    if (steer_ok && imu_ok && allow_party_mode) {
+        if (state->mode == DIFF_MODE_PARTY) {
+            /* Maintain full closed-loop PartyMode */
         } else {
-            /* Fallback to MingoMode (manual mode nominal, or IMU lost/stale/implausible) */
-            state->imu_healthy_start_ms = 0;
-            state->mode = DIFF_MODE_MINGO;
-            if (allow_party_mode) {
+            /* Debounce recovery to PartyMode */
+            if (state->imu_healthy_start_ms == 0) {
+                state->imu_healthy_start_ms = in->now_ms;
+            }
+            if ((in->now_ms - state->imu_healthy_start_ms) >= config->timeouts.mode_debounce_ms) {
+                state->mode = DIFF_MODE_PARTY;
+            } else {
+                state->mode = DIFF_MODE_MINGO;
                 out->diag_flags |= DIFF_FLAG_FALLBACK_ACTIVE;
-                if (!in->imu_valid) {
-                    out->diag_flags |= DIFF_FLAG_IMU_TIMEOUT;
-                }
             }
         }
+    } else if (steer_ok || imu_ok) {
+        /* Partial sensor error (IMU or LWS fault, or Party disabled in config) -> MingoMode */
+        state->imu_healthy_start_ms = 0;
+        state->mode = DIFF_MODE_MINGO;
+        if (!steer_ok || !imu_ok) {
+            out->diag_flags |= DIFF_FLAG_FALLBACK_ACTIVE;
+        }
+    } else {
+        /* Total sensor error (neither LWS nor IMU valid) -> PassiveMode (inverter-only) */
+        state->imu_healthy_start_ms = 0;
+        state->mode = DIFF_MODE_PASSIVE;
+        out->diag_flags |= DIFF_FLAG_FALLBACK_ACTIVE;
     }
     out->mode = state->mode;
 
@@ -244,67 +309,63 @@ void electronic_diff_step(DiffState* state,
     }
 
     /* 4. Compute Torque Distribution According to Mode */
-    if (state->mode == DIFF_MODE_PASSIVE || in->vehicle_speed_mps <= config->limits.min_velocity_mps) {
-        /* Mode 0: Symmetric 50/50 split */
+    if (in->vehicle_speed_mps <= config->limits.min_velocity_mps) {
+        /* Standstill / jack-stand safety: symmetric 50/50 split while preserving logical mode */
         const float t_base = t_total * 0.5f;
         t_left_raw = t_base;
         t_right_raw = t_base;
         state->pid_integral_nm = 0.0f;
+    } else if (state->mode == DIFF_MODE_PASSIVE) {
+        /* Mode 0 (Inverter-only fallback): Base 50/50 + minimal Virtual LSD feedback (+ TCS below) */
+        state->pid_integral_nm = 0.0f;
+        const float t_base = t_total * 0.5f;
+        t_left_raw = t_base;
+        t_right_raw = t_base;
+        apply_virtual_lsd(config, in, 0.0f, &t_left_raw, &t_right_raw, out);
     } else if (state->mode == DIFF_MODE_MINGO) {
-        /* Mode 1: Open-loop kinematic Ackermann feedforward + Virtual LSD.
-         * Wash out PID integrator to ensure bump-less return to PartyMode */
+        /* Mode 1 (Partial sensor fault):
+         * - If LWS valid: open-loop Ackermann + steer-rate feedforward + Virtual LSD.
+         * - If LWS lost & IMU valid: IMU curvature Virtual LSD + beta spin guard. */
         state->pid_integral_nm = 0.0f;
         const float t_base = t_total * 0.5f;
 
-        const float k_diff = electronic_diff_calc_k_diff(config, road_wheel_angle, in->vehicle_speed_mps);
-        const float tan_delta = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
-        const float dir = (road_wheel_angle >= 0.0f) ? 1.0f : -1.0f;
-        /* Scale k_diff (0..1) to achieve up to 45% base torque transfer across the axle */
-        const float delta_t_static = t_base * k_diff * dir * 0.45f;
+        if (steer_ok) {
+            const float k_diff = electronic_diff_calc_k_diff(config, road_wheel_angle, in->vehicle_speed_mps);
+            const float tan_delta = tanf(clampf(road_wheel_angle, -0.785f, 0.785f));
+            const float dir = (road_wheel_angle >= 0.0f) ? 1.0f : -1.0f;
+            /* Scale k_diff (0..1) to achieve up to 45% base torque transfer across the axle */
+            const float delta_t_static = t_base * k_diff * dir * 0.45f;
 
-        /* Dynamic feedforward based on steering wheel angular velocity:
-         * Provides crisp turn-in yaw assist without closed-loop hunting or driver fight */
-        float delta_t_dynamic = 0.0f;
-        if (config->vehicle.k_steer_speed_feedforward > 0.0f && in->steering_angle_valid && isfinite(in->steering_wheel_speed_rad_s)) {
-            const float steer_rate_rads = (config->vehicle.steer_ratio > 0.01f)
-                ? (in->steering_wheel_speed_rad_s / config->vehicle.steer_ratio)
+            float delta_t_dynamic = 0.0f;
+            if (config->vehicle.k_steer_speed_feedforward > 0.0f && isfinite(in->steering_wheel_speed_rad_s)) {
+                const float steer_rate_rads = (config->vehicle.steer_ratio > 0.01f)
+                    ? (in->steering_wheel_speed_rad_s / config->vehicle.steer_ratio)
+                    : 0.0f;
+                const float speed_factor = electronic_diff_calc_k_diff(config, 0.20f, in->vehicle_speed_mps);
+                delta_t_dynamic = config->vehicle.k_steer_speed_feedforward * steer_rate_rads * speed_factor;
+                delta_t_dynamic = clampf(delta_t_dynamic,
+                                         -config->vehicle.max_steer_speed_delta_nm,
+                                         config->vehicle.max_steer_speed_delta_nm);
+            }
+            out->delta_torque_speed_nm = delta_t_dynamic;
+
+            float delta_t = delta_t_static + delta_t_dynamic;
+            delta_t = clampf(delta_t, -config->limits.max_delta_torque_nm, config->limits.max_delta_torque_nm);
+            out->delta_torque_nm = delta_t;
+
+            t_left_raw  = t_base - delta_t;
+            t_right_raw = t_base + delta_t;
+            apply_virtual_lsd(config, in, tan_delta, &t_left_raw, &t_right_raw, out);
+        } else {
+            /* LWS lost, IMU valid: estimate turn curvature from yaw_rate / v_x */
+            t_left_raw  = t_base;
+            t_right_raw = t_base;
+            const float tan_delta_est = (in->vehicle_speed_mps > 1.0f)
+                ? clampf((config->vehicle.wheelbase_m * in->measured_yaw_rate_rads) / in->vehicle_speed_mps, -0.785f, 0.785f)
                 : 0.0f;
-            const float speed_factor = electronic_diff_calc_k_diff(config, 0.20f, in->vehicle_speed_mps);
-            delta_t_dynamic = config->vehicle.k_steer_speed_feedforward * steer_rate_rads * speed_factor;
-            delta_t_dynamic = clampf(delta_t_dynamic,
-                                     -config->vehicle.max_steer_speed_delta_nm,
-                                     config->vehicle.max_steer_speed_delta_nm);
-        }
-        out->delta_torque_speed_nm = delta_t_dynamic;
-
-        float delta_t = delta_t_static + delta_t_dynamic;
-        /* Hard clamp to maximum allowable mechanical bias */
-        delta_t = clampf(delta_t, -config->limits.max_delta_torque_nm, config->limits.max_delta_torque_nm);
-        out->delta_torque_nm = delta_t;
-
-        t_left_raw  = t_base - delta_t;
-        t_right_raw = t_base + delta_t;
-
-        /* Virtual LSD with ERPM telemetry feedback */
-        if (in->wheel_speeds_valid && isfinite(in->left_wheel_speed_rads) && isfinite(in->right_wheel_speed_rads)) {
-            const float omega_mean = (in->left_wheel_speed_rads + in->right_wheel_speed_rads) * 0.5f;
-            if (omega_mean > 5.0f) {
-                const float delta_omega_expected = omega_mean * (config->vehicle.track_width_rear_m / config->vehicle.wheelbase_m) * tan_delta;
-                const float delta_omega_measured = in->right_wheel_speed_rads - in->left_wheel_speed_rads;
-                const float slip_diff = delta_omega_measured - delta_omega_expected;
-                const float slip_thresh = config->limits.lsd_slip_threshold * omega_mean;
-
-                if (fabsf(slip_diff) > slip_thresh) {
-                    out->diag_flags |= DIFF_FLAG_LSD_ACTIVE;
-                    const float excess_slip = fabsf(slip_diff) - slip_thresh;
-                    const float trim = excess_slip * config->limits.lsd_k_slip;
-
-                    if (slip_diff > 0.0f) {
-                        t_right_raw -= trim;
-                    } else {
-                        t_left_raw -= trim;
-                    }
-                }
+            apply_virtual_lsd(config, in, tan_delta_est, &t_left_raw, &t_right_raw, out);
+            if (imu_ok) {
+                apply_beta_observer_and_spin_guard(state, config, in, dt, &t_left_raw, &t_right_raw, out);
             }
         }
     } else if (state->mode == DIFF_MODE_PARTY) {
@@ -381,28 +442,7 @@ void electronic_diff_step(DiffState* state,
         t_right_raw = t_base_right + delta_t_tv;
 
         /* 4.3 Vehicle side-slip angle (beta) observer & emergency spin protection */
-        if (in->vehicle_speed_mps > 1.5f) {
-            const float d_beta = (in->lateral_accel_mps2 / in->vehicle_speed_mps) - in->measured_yaw_rate_rads;
-            /* Washout leakage prevents long-term integration drift */
-            state->side_slip_beta_rad = state->side_slip_beta_rad * (1.0f - 0.05f * dt) + d_beta * dt;
-            out->side_slip_angle_rad = state->side_slip_beta_rad;
-
-            if (fabsf(state->side_slip_beta_rad) > config->limits.beta_crit_rad) {
-                out->diag_flags |= DIFF_FLAG_EMERGENCY_SPIN;
-                /* Emergency spin stabilization: reduce total torque demand by 70% */
-                t_left_raw  *= 0.30f;
-                t_right_raw *= 0.30f;
-                /* Apply stabilizing counter-moment opposing slip velocity */
-                const float counter_bias = 5.0f;
-                if (state->side_slip_beta_rad > 0.0f) {
-                    t_left_raw  += counter_bias;
-                    t_right_raw -= counter_bias;
-                } else {
-                    t_left_raw  -= counter_bias;
-                    t_right_raw += counter_bias;
-                }
-            }
-        }
+        apply_beta_observer_and_spin_guard(state, config, in, dt, &t_left_raw, &t_right_raw, out);
     }
 
     /* 5. Active Traction Control (TCS) Slip Ratio Limiter */

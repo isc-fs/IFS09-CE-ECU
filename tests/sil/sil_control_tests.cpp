@@ -3356,12 +3356,28 @@ static void test_electronic_differential() {
     CHECK(std::abs(out.torque_right_nm - t_right_before) <= (cfg.limits.max_slew_rate_nm_s * in.dt_s * 3.0f),
           "Bump-less transfer: no abrupt torque step on right motor");
 
-    // 13. Steering sensor failure -> passive 50/50
+    // 13. Total sensor failure (both IMU and LWS invalid) -> Passive with minimal inverter feedback
     in.steering_angle_valid = false;
+    in.imu_valid = false;
+    in.wheel_speeds_valid = true;
+    in.left_wheel_speed_rads = 55.0f;
+    in.right_wheel_speed_rads = 80.0f; // Asymmetric slip > lsd_slip_threshold
     in.now_ms += 10;
     electronic_diff_step(&state, &cfg, &in, &out);
-    CHECK(out.mode == DIFF_MODE_PASSIVE, "Steering fault drops to Passive 50/50 mode");
+    CHECK(out.mode == DIFF_MODE_PASSIVE, "Total fault (no LWS, no IMU) drops to Passive mode");
     CHECK((out.diag_flags & DIFF_FLAG_STEER_TIMEOUT) != 0, "Steer timeout flag set");
+    CHECK((out.diag_flags & DIFF_FLAG_LSD_ACTIVE) != 0, "Passive mode applies minimal Virtual LSD inverter feedback");
+    CHECK(out.torque_right_nm < out.torque_left_nm, "Passive Virtual LSD trims spinning right wheel");
+
+    // 13b. LWS-only failure (IMU valid) -> MingoMode using IMU curvature + Virtual LSD
+    in.imu_valid = true;
+    in.measured_yaw_rate_rads = 0.0f;
+    in.lateral_accel_mps2 = 0.0f;
+    in.now_ms += 10;
+    electronic_diff_step(&state, &cfg, &in, &out);
+    CHECK(out.mode == DIFF_MODE_MINGO, "LWS-only fault (IMU valid) operates in MingoMode");
+    CHECK((out.diag_flags & DIFF_FLAG_STEER_TIMEOUT) != 0, "Steer timeout flag still set in MingoMode");
+    in.wheel_speeds_valid = false;
 
     // 14. CAN Interface Layer: Bosch LWS & IMU & DTI
     BoschLwsState lws{};
@@ -3415,11 +3431,15 @@ static void test_electronic_differential() {
     CHECK(!imu.valid, "IMU timed out past imu_timeout_ms");
     CHECK(!inv_l.valid, "Inverter timed out past inverter_timeout_ms");
 
-    // 15. Manual Driving Mode restricts to MingoMode (TV disabled) with steering rate feedforward
+    // 15. Manual Driving Mode defaults to PartyMode when healthy, and MingoMode on IMU loss with steering rate feedforward
     electronic_diff_init(&state);
     in.is_dv_mode = false; // Seated human driver
     in.imu_valid = true;   // Healthy IMU available
+    in.measured_yaw_rate_rads = 0.4f;
+    in.lateral_accel_mps2 = 4.8f;
     in.wheel_speeds_valid = true;
+    in.left_wheel_speed_rads = 58.8f;
+    in.right_wheel_speed_rads = 58.8f;
     in.vehicle_speed_mps = 12.0f;
     in.total_torque_demand_nm = 40.0f;
     in.steering_angle_valid = true;
@@ -3431,8 +3451,15 @@ static void test_electronic_differential() {
         in.now_ms += 10;
         electronic_diff_step(&state, &cfg, &in, &out);
     }
-    // In manual mode, closed-loop TV must NOT activate even if IMU is healthy
-    CHECK(out.mode == DIFF_MODE_MINGO, "Manual driving mode remains in MingoMode (open loop) even with healthy IMU");
+    CHECK(out.mode == DIFF_MODE_PARTY, "Manual driving mode defaults to PartyMode when LWS & IMU are healthy");
+
+    // Lose IMU in manual mode -> instant fallback to MingoMode with steering rate feedforward
+    in.imu_valid = false;
+    for (int i = 0; i < 10; ++i) {
+        in.now_ms += 10;
+        electronic_diff_step(&state, &cfg, &in, &out);
+    }
+    CHECK(out.mode == DIFF_MODE_MINGO, "Manual driving mode falls back to MingoMode on IMU loss");
     CHECK(std::abs(out.delta_torque_speed_nm) < 0.01f, "Static turn has zero steering speed feedforward");
     const float t_right_static = out.torque_right_nm;
 
@@ -4589,7 +4616,7 @@ static void test_electronic_diff_pre_assembly_validation() {
         CHECK((out.diag_flags & DIFF_FLAG_IMU_IMPLAUSIBLE) != 0, "IMU polarity flip: triggers DIFF_FLAG_IMU_IMPLAUSIBLE");
         CHECK(state.mode != DIFF_MODE_PARTY, "IMU polarity flip: blocks PartyMode closed-loop");
 
-        // 2c. Manual Shakedown Protection (enable_party_mode_in_manual == false ignores wild IMU)
+        // 2c. Manual Mode Default Party + Corrupted IMU Degradation to Mingo
         DiffState s_clean, s_noisy;
         electronic_diff_init(&s_clean);
         electronic_diff_init(&s_noisy);
@@ -4612,10 +4639,9 @@ static void test_electronic_diff_pre_assembly_validation() {
             electronic_diff_step(&s_clean, &cfg, &in_clean, &out_clean);
             electronic_diff_step(&s_noisy, &cfg, &in_noisy, &out_noisy);
         }
-        CHECK(s_noisy.mode == DIFF_MODE_MINGO, "Manual shakedown: locked to MingoMode");
-        CHECK(fabsf(out_clean.torque_left_nm - out_noisy.torque_left_nm) < 1e-4f &&
-              fabsf(out_clean.torque_right_nm - out_noisy.torque_right_nm) < 1e-4f,
-              "Manual shakedown: wild IMU spikes do not affect torque output");
+        CHECK(s_clean.mode == DIFF_MODE_PARTY, "Manual mode default: enters PartyMode with healthy IMU & LWS");
+        CHECK(s_noisy.mode == DIFF_MODE_MINGO && (out_noisy.diag_flags & DIFF_FLAG_IMU_IMPLAUSIBLE) != 0,
+              "Manual mode fault: corrupted IMU degrades cleanly to MingoMode");
     }
 
     // 3. Workshop Jack-Stand Commissioning (Caballetes) & Shakedown Cap
@@ -4722,8 +4748,8 @@ static void test_electronic_diff_pre_assembly_validation() {
         bad.now_ms += 10;
         electronic_diff_step(&state, &cfg, &bad, &out);
         CHECK(std::isfinite(out.torque_left_nm) && std::isfinite(out.torque_right_nm) &&
-              out.torque_left_nm == 0.0f && out.torque_right_nm == 0.0f,
-              "Inf guard: Inf steering angle fails safe to 0 Nm");
+              out.mode == DIFF_MODE_MINGO && (out.diag_flags & DIFF_FLAG_STEER_TIMEOUT) != 0,
+              "Inf guard: Inf steering angle degrades cleanly to MingoMode with finite torque");
 
         bad = in;
         bad.measured_yaw_rate_rads = nan_val;

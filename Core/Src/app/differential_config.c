@@ -34,7 +34,7 @@ DiffConfig diff_config_get_default(void) {
     cfg.vehicle.rear_roll_stiffness_ratio = 0.4198167f;
     cfg.vehicle.road_friction_coeff       = 1.350f;
     /* Manual vs Autonomous mode control and steering feedforward */
-    cfg.vehicle.enable_party_mode_in_manual = false; /* Manual driver uses open-loop ED + feedforward */
+    cfg.vehicle.enable_party_mode_in_manual = true; /* PartyMode is default in both manual and DV */
     cfg.vehicle.k_steer_speed_feedforward   = 3.50f; /* Feedforward gain [Nm / (rad/s)] */
     cfg.vehicle.max_steer_speed_delta_nm    = 5.00f; /* Max dynamic steering rate bias [Nm] */
 
